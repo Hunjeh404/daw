@@ -4,11 +4,11 @@ import { kFilters, linToDb } from './dsp.js';
 
 const FS = 44100;
 const N = 2048;
-const STRIDE = Math.round(FS * 1.2), WARM = Math.round(FS * 0.05), BLK = Math.round(FS * 0.4);
+const STRIDE = Math.round(FS * 1.2), WARM = Math.round(FS * 0.05), BLK = Math.round(FS * 0.4), SUB = BLK / 8;
 const FHOP = Math.round(FS * 0.5);
 export const BANDS = [['sub', 20, 60], ['low', 60, 250], ['lowmid', 250, 500], ['mid', 500, 2000], ['pres', 2000, 7000], ['high', 7000, 12000], ['air', 12000, 20000]];
 
-function fft(re, im) {
+export function fft(re, im) {
   const n = re.length;
   for (let i = 1, j = 0; i < n; i++) {
     let bit = n >> 1;
@@ -29,7 +29,7 @@ function fft(re, im) {
     }
   }
 }
-const HANN = Float32Array.from({ length: N }, (_, i) => 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (N - 1)));
+export const HANN = Float32Array.from({ length: N }, (_, i) => 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (N - 1)));
 const binOf = (f) => Math.round(f / FS * N);
 const lu = (ms) => -0.691 + 10 * Math.log10(ms + 1e-15);
 
@@ -48,6 +48,7 @@ export class Stats {
     this.pos = 0; this.acc = 0;
     this.blocks = []; this.times = [];
     this.peak = 0; this.band = new Float64Array(BANDS.length); this.frames = 0;
+    this.sAcc = 0; this.subs = [];
   }
   // 연속된 조각을 차례로 넣는다. 새 구간을 시작하려면 restart()
   restart() { this.pos = 0; this.acc = 0; this.kL = kFilters(FS); this.kR = kFilters(FS); }
@@ -63,6 +64,8 @@ export class Stats {
       const x = this.kL[1].run(this.kL[0].run(l)), y = this.kR[1].run(this.kR[0].run(r));
       if (ph < WARM) continue;
       this.acc += x * x + y * y;
+      this.sAcc += x * x + y * y;
+      if ((ph - WARM) % SUB === SUB - 1) { this.subs.push(this.sAcc / SUB); this.sAcc = 0; }
       if (ph === WARM + BLK - 1) { this.blocks.push(this.acc / BLK); this.times.push((this.pos + i) / FS); this.acc = 0; }
     }
     const re = new Float32Array(N), im = new Float32Array(N);
@@ -85,6 +88,11 @@ export class Stats {
     const bands = {};
     BANDS.forEach(([name], k) => { bands[name] = 10 * Math.log10(this.band[k] / tot + 1e-20); });
     const lufs = integrate(this.blocks);
-    return { lufs, peak: linToDb(this.peak), crest: linToDb(this.peak) - lufs, bands, blocks: this.blocks, active: this.frames > 0 };
+    // 잔향 정도: 소리가 나는 구간에서 50ms 크기의 넓게 퍼진 정도. 마른 소리는 사이사이가 비어 차이가 크고, 젖은 소리는 꼬리가 채워 작다
+    const db = this.subs.map((e) => 10 * Math.log10(e + 1e-15));
+    const top = Math.max(...db, -200);
+    const act = db.filter((v) => v > top - 50).sort((a, b) => a - b);
+    const spread = act.length > 20 ? act[Math.floor(act.length * 0.9)] - act[Math.floor(act.length * 0.1)] : null;
+    return { lufs, spread, peak: linToDb(this.peak), crest: linToDb(this.peak) - lufs, bands, blocks: this.blocks, active: this.frames > 0 };
   }
 }

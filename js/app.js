@@ -406,7 +406,7 @@ function renderPanel() {
   const vb = $('volBox');
   vb.innerHTML = '';
   vb.append(slider({
-    label: '트랙 볼륨', min: -24, max: 6, step: 0.1, unit: 'dB',
+    label: '트랙 볼륨', min: -24, max: 12, step: 0.1, unit: 'dB',
     get: () => t.volumeDb, show: (v) => (v > 0 ? '+' : '') + v.toFixed(1),
     set: (v) => { t.volumeDb = v; engine.applyGains(); },
   }));

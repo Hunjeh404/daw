@@ -5,6 +5,7 @@ import { Loudness } from './dsp.js';
 
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const half = (v) => Math.round(v * 2) / 2;
+const WET_DB = 14, DRY_DB = 24;   // 50ms 크기 분포 폭(dB): 이보다 좁으면 젖음, 넓으면 마름
 
 // 악기별 기준값: 보컬 대비 목표 음량, 저역·고역 비율 목표, 로우컷, 압축, 어택, 패닝, 리버브
 const CAT = {
@@ -32,7 +33,8 @@ export function measureTracks(E, onProgress) {
     w.onmessage = (e) => {
       const m = e.data;
       if (m.type === 'progress') { onProgress && onProgress(m.done); return; }
-      E.tracks.forEach((t, i) => { t.ana = m.tracks[i]; });
+      E.tracks.forEach((t, i) => { t.ana = m.tracks[i]; t.ana.fit = m.fit && m.fit[i] != null ? m.fit[i] : null; });
+      E.ana.hasFit = !!m.fit;
       E.ana.rawLufs = m.raw.lufs;
       E.ana.refLufs = m.ref ? m.ref.lufs : null;
       w.terminate();
@@ -49,6 +51,23 @@ export function measureTracks(E, onProgress) {
   });
 }
 
+// 원곡 기준 볼륨: 스템 합이 원곡의 대역별·시간별 크기에 가장 가까워지는 값. 가운데 값이 0dB이 되게 옮긴다.
+// 반환: 원곡에서 거의 들리지 않는다고 나온 트랙 이름들
+export function fitVolumes(E) {
+  const live = E.tracks.filter((t) => !t.mix.ref && t.ana && t.ana.fit != null);
+  if (!live.length) return null;
+  const db = live.map((t) => (t.ana.fit > 1e-6 ? 10 * Math.log10(t.ana.fit) : -Infinity));
+  const fin = db.filter(isFinite).sort((a, b) => a - b);
+  const mid = fin.length ? fin[Math.floor(fin.length / 2)] : 0;
+  const quiet = [];
+  live.forEach((t, i) => {
+    const v = db[i] - mid;
+    if (!isFinite(v) || v < -24) quiet.push(t.name);
+    t.volumeDb = half(clamp(isFinite(v) ? v : -24, -24, 12));
+  });
+  return quiet;
+}
+
 // 트랙 하나의 설정 제안
 export function suggestTrack(E, t) {
   const a = t.ana;
@@ -58,7 +77,8 @@ export function suggestTrack(E, t) {
   // 볼륨: 다른 트랙들로 추정한 보컬 기준 음량에 맞추되 절반만, ±4dB 안에서 (원래 밸런스를 크게 해치지 않게)
   const implied = E.tracks.filter((x) => !x.mix.ref && x.ana && isFinite(x.ana.lufs)).map((x) => x.ana.lufs - (CAT[x.cat] || CAT.other).off).sort((p, q) => p - q);
   const refV = implied[Math.floor(implied.length / 2)];
-  t.volumeDb = half(clamp((refV + c.off - a.lufs) * 0.5, -4, 4));
+  if (a.fit != null) fitVolumes(E);   // 원곡이 있으면 원곡 속 크기를 따른다
+  else t.volumeDb = half(clamp((refV + c.off - a.lufs) * 0.5, -4, 4));
   m.low = { on: c.hp > 0, hz: c.hp || 80 };
   const b = a.bands;
   const lowRel = b.low - b.mid, presRel = b.pres - b.mid, airRel = b.air - b.pres;
@@ -73,7 +93,11 @@ export function suggestTrack(E, t) {
   };
   m.comp = { on: c.comp > 0 || c.trans !== 0, amt: +clamp(c.comp + (a.crest > 18 ? 0.1 : 0), 0, 1).toFixed(2), trans: c.trans };
   m.pan = c.pan;
-  m.send = c.send;
+  // 잔향이 이미 많이 들어간 스템(크기 변화 폭이 좁음)은 공용 리버브를 줄이거나 보내지 않는다
+  const sp = a.spread;
+  const wet = sp == null ? 0 : sp < WET_DB ? 1 : sp < DRY_DB ? (DRY_DB - sp) / (DRY_DB - WET_DB) : 0;
+  m.send = +(c.send * (1 - wet)).toFixed(2);
+  t.ana.wet = wet;
   return true;
 }
 

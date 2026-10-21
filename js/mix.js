@@ -2,7 +2,7 @@
 import { slider, toggle, section, segmented } from './ui.js';
 import { Biquad } from './dsp.js';
 import { EQF } from './mixgraph.js';
-import { measureTracks, suggestTrack, autoMaster } from './analysis.js';
+import { measureTracks, suggestTrack, autoMaster, fitVolumes } from './analysis.js';
 
 const SR = 44100;
 const $ = (id) => document.getElementById(id);
@@ -97,6 +97,13 @@ export function initMix({ engine: E, pushUndo, flash, sub, onChange, setBusy, un
       all.onclick = () => runTracks(E.tracks.filter((t) => !t.mix.ref));
       row.appendChild(all);
     }
+    if (view === 'track' && E.hasRef) {
+      const fb = document.createElement('button');
+      fb.textContent = '원곡 밸런스';
+      fb.disabled = busy;
+      fb.onclick = runFit;
+      row.appendChild(fb);
+    }
     const opts = [['raw', '원본'], ['apply', '적용']];
     if (E.hasRef) opts.push(['ref', '원곡']);
     row.appendChild(segmented(opts, E.mode, (m) => {
@@ -123,6 +130,22 @@ export function initMix({ engine: E, pushUndo, flash, sub, onChange, setBusy, un
       changed();
       flash(list.length > 1 ? '모든 트랙에 자동 설정을 넣었습니다' : `${cur.name}에 자동 설정을 넣었습니다`);
     } catch (e) { flash('분석하지 못했습니다: ' + e.message); }
+    busy = false; setBusy(false); render();
+  }
+
+  async function runFit() {
+    if (busy) return;
+    busy = true; setBusy(true); render();
+    try {
+      E.stop(); onChange && onChange('stop');
+      await measure('원곡 밸런스');
+      if (!E.ana.hasFit) throw new Error('원곡과 비교할 스템이 없습니다');
+      pushUndo();
+      const quiet = fitVolumes(E);
+      E.ana.procLufs = null;
+      changed();
+      flash(quiet && quiet.length ? `원곡 기준으로 맞췄습니다. 원곡에서 거의 안 들리는 트랙: ${quiet.join(', ')}` : '원곡 기준으로 트랙 볼륨을 맞췄습니다');
+    } catch (e) { flash('맞추지 못했습니다: ' + e.message); }
     busy = false; setBusy(false); render();
   }
 
@@ -157,7 +180,7 @@ export function initMix({ engine: E, pushUndo, flash, sub, onChange, setBusy, un
     body.appendChild(autoRow());
     const t = cur, m = t.mix;
     body.appendChild(section('t-basic', '기본', null, (b) => {
-      b.appendChild(slider({ label: '볼륨', min: -24, max: 6, step: 0.5, unit: 'dB', get: () => t.volumeDb, show: (v) => sgn(v), set: (v) => { t.volumeDb = v; changed(); } }));
+      b.appendChild(slider({ label: '볼륨', min: -24, max: 12, step: 0.5, unit: 'dB', get: () => t.volumeDb, show: (v) => sgn(v), set: (v) => { t.volumeDb = v; changed(); } }));
       b.appendChild(slider({ label: '패닝', min: -1, max: 1, step: 0.05, get: () => m.pan, show: (v) => (Math.abs(v) < 0.01 ? '가운데' : (v < 0 ? '왼 ' : '오 ') + pct(Math.abs(v))), set: (v) => { m.pan = v; changed(); } }));
       b.appendChild(slider({ label: '리버브', min: 0, max: 1, step: 0.01, unit: '%', get: () => m.send, show: pct, set: (v) => { m.send = v; changed(); } }));
       const r = document.createElement('div');
