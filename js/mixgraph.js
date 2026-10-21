@@ -77,7 +77,7 @@ export function masterFxParams(mm, raw, matchDb = 0) {
   return {
     bypass: raw,
     bypassGainDb: matchDb,
-    inGainDb: mm.lim.on ? mm.lim.gainDb : 0,
+    inGainDb: mm.lim.on || mm.lim.gainOnly ? mm.lim.gainDb : 0,
     ms: mm.space,
     tamer: mm.tamer,
     glue: { on: mm.glue.on, amt: mm.glue.amt, ref: mm.lim.target },

@@ -1,6 +1,6 @@
 // 트랙 처리(track-fx)와 전체 마스터 처리(master-fx).
 // 설정은 port로 받은 객체를 그대로 쓴다. 꺼진 처리는 계산하지 않는다.
-import { Biquad, coef, dbToLin, linToDb, Loudness, interPeak } from './dsp.js';
+import { Biquad, coef, dbToLin, linToDb, Loudness, interPeak, TruePeak, TP_DELAY } from './dsp.js';
 
 const FS = sampleRate;
 
@@ -165,7 +165,8 @@ class MasterFx extends AudioWorkletProcessor {
     this.cg = 1; this.cg0 = 1;
     this.sHP = new Biquad(); this.sHP2 = new Biquad(); this.monoHz = 0;
     this.sLo = new Biquad().set('lowpass', 3000, 0.707, 0, FS);
-    this.LA = Math.round(FS * 0.004);
+    this.LA = Math.round(FS * 0.004) + TP_DELAY;
+    this.tpL = new TruePeak(); this.tpR = new TruePeak(); this.oL = new TruePeak(); this.oR = new TruePeak();
     this.dL = new Float32Array(this.LA); this.dR = new Float32Array(this.LA); this.req = new Float32Array(this.LA).fill(1); this.di = 0;
     this.hL = [0, 0, 0, 0]; this.hR = [0, 0, 0, 0];
     this.g = 1; this.ga = coef(0.8, FS); this.gr = coef(100, FS);
@@ -220,10 +221,7 @@ class MasterFx extends AudioWorkletProcessor {
           l *= g; r *= g;
         }
         if (lim) {
-          const hL = this.hL, hR = this.hR;
-          hL[0] = hL[1]; hL[1] = hL[2]; hL[2] = hL[3]; hL[3] = l;
-          hR[0] = hR[1]; hR[1] = hR[2]; hR[2] = hR[3]; hR[3] = r;
-          const tpk = Math.max(interPeak(hL[0], hL[1], hL[2], hL[3]), interPeak(hR[0], hR[1], hR[2], hR[3]));
+          const tpk = Math.max(this.tpL.push(l), this.tpR.push(r));
           const j = this.di;
           const dl = this.dL[j], dr = this.dR[j];
           this.dL[j] = l; this.dR[j] = r; this.req[j] = tpk > ceil ? ceil / tpk : 1;
@@ -249,13 +247,9 @@ class MasterFx extends AudioWorkletProcessor {
       if (al > this.pl) this.pl = al;
       if (ar > this.pr) this.pr = ar;
     }
-    // 측정용 트루피크는 출력 기준으로 따로 어림
-    if (!this.oh) this.oh = [[0, 0, 0, 0], [0, 0, 0, 0]];
+    // 출력 트루피크
     for (let i = 0; i < oL.length; i++) {
-      const a = this.oh[0], b = this.oh[1];
-      a[0] = a[1]; a[1] = a[2]; a[2] = a[3]; a[3] = oL[i];
-      b[0] = b[1]; b[1] = b[2]; b[2] = b[3]; b[3] = oR[i];
-      const t = Math.max(interPeak(a[0], a[1], a[2], a[3]), interPeak(b[0], b[1], b[2], b[3]));
+      const t = Math.max(this.oL.push(oL[i]), this.oR.push(oR[i]));
       if (t > this.tp) this.tp = t;
     }
     if (++this.n % 32 === 0) {

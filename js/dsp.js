@@ -88,7 +88,38 @@ export class Loudness {
   }
 }
 
-// 4배 보간으로 샘플 사이 피크(트루피크)를 어림
+// 트루피크 측정기: 4배 업샘플(창 씌운 싱크 16탭)로 샘플 사이 피크를 잰다
+const TP_TAPS = 16;
+const TP_COEF = [0.25, 0.5, 0.75].map((frac) => {
+  const c = new Float64Array(TP_TAPS);
+  for (let k = 0; k < TP_TAPS; k++) {
+    const x = k - (TP_TAPS / 2 - 1) - frac;          // 가운데 두 샘플 사이를 보간
+    const sinc = Math.abs(x) < 1e-9 ? 1 : Math.sin(Math.PI * x) / (Math.PI * x);
+    const w = 0.5 + 0.5 * Math.cos(Math.PI * x / (TP_TAPS / 2 + 0.5));
+    c[k] = sinc * w;
+  }
+  const sum = c.reduce((a, b) => a + b, 0);
+  return c.map((v) => v / sum);
+});
+export class TruePeak {
+  constructor() { this.h = new Float64Array(TP_TAPS); this.i = 0; }
+  // 새 샘플을 넣고, 가운데(지연 TP_TAPS/2 - 1 샘플) 근처의 최대 크기를 돌려준다
+  push(x) {
+    const h = this.h;
+    h[this.i] = x; this.i = (this.i + 1) % TP_TAPS;
+    let m = Math.abs(h[(this.i + TP_TAPS / 2 - 1) % TP_TAPS]);
+    for (const c of TP_COEF) {
+      let y = 0;
+      for (let k = 0; k < TP_TAPS; k++) y += c[k] * h[(this.i + k) % TP_TAPS];
+      const a = Math.abs(y);
+      if (a > m) m = a;
+    }
+    return m;
+  }
+}
+export const TP_DELAY = TP_TAPS / 2 - 1;
+
+// 4배 보간으로 샘플 사이 피크(트루피크)를 어림 (가벼운 근사)
 export function interPeak(x0, x1, x2, x3) {
   let m = Math.abs(x2);
   const c1 = -x0 + x2, c2 = 2 * x0 - 5 * x1 + 4 * x2 - x3, c3 = -x0 + 3 * x1 - 3 * x2 + x3;

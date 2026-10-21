@@ -3,6 +3,7 @@ import { listZip, readEntry } from './zip.js';
 import { colorFor } from './cats.js';
 import { slider, setUndoHook, segmented } from './ui.js';
 import { initMix } from './mix.js';
+import { initExport } from './exportui.js';
 
 const engine = new Engine();
 const $ = (id) => document.getElementById(id);
@@ -496,6 +497,9 @@ const mix = initMix({
   onChange: (what) => { if (what === 'stop') updatePlayBtn(); renderCompare(); for (const t of engine.tracks) { updateHead(t); if (t.row) tracksEl.appendChild(t.row); } redraw(); },
 });
 
+// ---------- 내보내기 탭 ----------
+const exp = initExport({ engine, flash, sub, setBusy: (b) => { busy = b; if (!b) showStats(); }, onStop: updatePlayBtn });
+
 // ---------- 아래 재생바와 비교 전환 ----------
 let seekDrag = false;
 function paintSeek(f) {
@@ -544,6 +548,7 @@ for (const b of document.querySelectorAll('nav button')) {
     for (const x of document.querySelectorAll('nav button')) x.classList.toggle('on', x === b);
     for (const s of document.querySelectorAll('.tab')) s.classList.toggle('show', s.id === 'tab-' + b.dataset.tab);
     if (b.dataset.tab === 'mix') { if (sel) mix.select(sel.t); mix.render(); }
+    if (b.dataset.tab === 'export') exp.render();
     layout();
   };
 }

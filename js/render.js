@@ -11,7 +11,8 @@ export async function renderRange(E, a, b, onChunk, opt = {}) {
   const mm = opt.mm || E.mm;
   const live = E.tracks.filter((t) => !t.mix.ref);
   const anySolo = live.some((t) => t.solo);
-  const use = live.filter((t) => !t.muted && (!anySolo || t.solo) && (!opt.only || opt.only.includes(t)));
+  // only가 있으면 그 트랙들만(음소거·솔로 무시), 없으면 지금 들리는 트랙들
+  const use = opt.only ? live.filter((t) => opt.only.includes(t)) : live.filter((t) => !t.muted && (!anySolo || t.solo));
   for (let c0 = a; c0 < b; c0 += CHUNK) {
     const c1 = Math.min(b, c0 + CHUNK);
     const w0 = Math.max(0, c0 - (opt.pre ?? PRE_DEFAULT));
