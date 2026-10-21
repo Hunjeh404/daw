@@ -2,7 +2,7 @@
 import { slider, toggle, section, segmented } from './ui.js';
 import { Biquad } from './dsp.js';
 import { EQF } from './mixgraph.js';
-import { measureTracks, suggestTrack, autoMaster, fitVolumes } from './analysis.js';
+import { measureTracks, suggestTrack, autoMaster, fitVolumes, applySpread } from './analysis.js';
 
 const SR = 44100;
 const $ = (id) => document.getElementById(id);
@@ -97,6 +97,16 @@ export function initMix({ engine: E, pushUndo, flash, sub, onChange, setBusy, un
       all.onclick = () => runTracks(E.tracks.filter((t) => !t.mix.ref));
       row.appendChild(all);
     }
+    const sp = document.createElement('div');
+    sp.className = 'spread';
+    const sl = document.createElement('span'); sl.textContent = '넓이';
+    sp.append(sl, segmented([['orig', '원곡 정도'], ['some', '조금 넓게'], ['wide', '넓게']], E.mm.spread, (v) => {
+      pushUndo();
+      E.mm.spread = v;
+      applySpread(E);
+      changed(); render();
+      flash(E.tracks.some((t) => t.ana) ? '패닝·폭을 다시 배치했습니다' : '자동 분석 때 이 넓이로 배치합니다');
+    }));
     if (view === 'track' && E.hasRef) {
       const fb = document.createElement('button');
       fb.textContent = '원곡 밸런스';
@@ -104,6 +114,7 @@ export function initMix({ engine: E, pushUndo, flash, sub, onChange, setBusy, un
       fb.onclick = runFit;
       row.appendChild(fb);
     }
+    row._spread = sp;
     return row;
   }
 
@@ -120,10 +131,28 @@ export function initMix({ engine: E, pushUndo, flash, sub, onChange, setBusy, un
       await measure('자동 분석');
       pushUndo();
       for (const t of list) suggestTrack(E, t);
+      applySpread(E, list);
       E.ana.procLufs = null;     // 트랙이 바뀌면 마스터 음량 맞춤은 다시 해야 함
       changed();
       flash(list.length > 1 ? '모든 트랙에 자동 설정을 넣었습니다' : `${cur.name}에 자동 설정을 넣었습니다`);
     } catch (e) { flash('분석하지 못했습니다: ' + e.message); }
+    busy = false; setBusy(false); render();
+  }
+
+  // 트랙과 마스터를 한 번에 자동으로 (올릴 때, 원곡 지정할 때)
+  async function runAuto(list, why) {
+    if (busy || !list.length) return;
+    busy = true; setBusy(true); render();
+    try {
+      E.stop(); onChange && onChange('stop');
+      await measure(why);
+      pushUndo();
+      for (const t of list) suggestTrack(E, t);
+      applySpread(E, list);
+      await autoMaster(E, (p) => sub(`${why}: 마스터 계산 ${Math.round(p * 100)}%`));
+      changed();
+      flash(E.hasRef ? '원곡 기준으로 믹싱·마스터를 잡았습니다' : '믹싱·마스터를 자동으로 잡았습니다');
+    } catch (e) { flash('자동 설정을 하지 못했습니다: ' + e.message); }
     busy = false; setBusy(false); render();
   }
 
@@ -171,12 +200,18 @@ export function initMix({ engine: E, pushUndo, flash, sub, onChange, setBusy, un
       chips.appendChild(c);
     }
     body.appendChild(chips);
-    body.appendChild(autoRow());
+    { const r = autoRow(); body.append(r, r._spread); }
     const t = cur, m = t.mix;
     body.appendChild(section('t-basic', '기본', null, (b) => {
       b.appendChild(slider({ label: '볼륨', min: -24, max: 12, step: 0.5, unit: 'dB', get: () => t.volumeDb, show: (v) => sgn(v), set: (v) => { t.volumeDb = v; changed(); } }));
       b.appendChild(slider({ label: '패닝', min: -1, max: 1, step: 0.05, get: () => m.pan, show: (v) => (Math.abs(v) < 0.01 ? '가운데' : (v < 0 ? '왼 ' : '오 ') + pct(Math.abs(v))), set: (v) => { m.pan = v; changed(); } }));
       b.appendChild(slider({ label: '리버브', min: 0, max: 1, step: 0.01, unit: '%', get: () => m.send, show: pct, set: (v) => { m.send = v; changed(); } }));
+      b.appendChild(slider({ label: '스테레오 폭', min: 0, max: 1, step: 0.05, unit: '%', get: () => m.width ?? 1, show: pct, set: (v) => { m.width = v; changed(); } }));
+      const fr = document.createElement('div');
+      fr.className = 'row';
+      fr.innerHTML = `<span class="grow">좌우 뒤집힘 바로잡기<small>${t.ana && t.ana.corr != null ? '좌우 상관 ' + t.ana.corr.toFixed(2) + (t.ana.corr < -0.3 ? ' · 뒤집혀 있음' : '') : '자동 분석 때 확인합니다'}</small></span>`;
+      fr.appendChild(toggle(!!m.flip, (v) => { m.flip = v; changed(); }, '좌우 뒤집힘 바로잡기'));
+      b.appendChild(fr);
       const r = document.createElement('div');
       r.className = 'row';
       r.innerHTML = `<span class="grow">원곡(기준)으로 쓰기<small>믹스에서 빼고 비교용으로만 들립니다</small></span>`;
@@ -189,6 +224,7 @@ export function initMix({ engine: E, pushUndo, flash, sub, onChange, setBusy, un
         m.ref = v; E.ana.refLufs = null; E.ana.procLufs = null;
         if (!E.hasRef && E.mode === 'ref') E.mode = 'apply';
         changed(); render();
+        if (v) runAuto(E.tracks.filter((x) => !x.mix.ref), '원곡 기준 자동 설정');   // 원곡을 지정하면 원곡 기준으로 다시 잡는다
       }, '원곡으로 쓰기'));
       b.appendChild(r);
     }));
@@ -225,7 +261,7 @@ export function initMix({ engine: E, pushUndo, flash, sub, onChange, setBusy, un
   // ---------- 전체 마스터 ----------
   function renderMaster() {
     const mm = E.mm;
-    body.appendChild(autoRow());
+    { const r = autoRow(); body.append(r, r._spread); }
     const card = document.createElement('div');
     card.className = 'meter';
     card.innerHTML = `
@@ -316,5 +352,5 @@ export function initMix({ engine: E, pushUndo, flash, sub, onChange, setBusy, un
   }
   requestAnimationFrame(tickMeters);
 
-  return { render, select: (t) => { cur = t; } };
+  return { render, select: (t) => { cur = t; }, autoNew: (list) => runAuto(list, '자동 믹싱') };
 }

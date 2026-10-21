@@ -49,6 +49,7 @@ export class Stats {
     this.blocks = []; this.times = [];
     this.peak = 0; this.band = new Float64Array(BANDS.length); this.frames = 0;
     this.sAcc = 0; this.subs = [];
+    this.sMM = 0; this.sSS = 0; this.sLR = 0; this.sLL = 0; this.sRR = 0;
   }
   // 연속된 조각을 차례로 넣는다. 새 구간을 시작하려면 restart()
   restart() { this.pos = 0; this.acc = 0; this.kL = kFilters(FS); this.kR = kFilters(FS); }
@@ -58,6 +59,7 @@ export class Stats {
       const ph = (this.pos + i) % STRIDE;
       const l = L[i] * scale, r = R[i] * scale;
       const a = l < 0 ? -l : l, b = r < 0 ? -r : r;
+      this.sLR += l * r; this.sLL += l * l; this.sRR += r * r;
       if (a > this.peak) this.peak = a;
       if (b > this.peak) this.peak = b;
       if (ph >= WARM + BLK) continue;
@@ -93,6 +95,9 @@ export class Stats {
     const top = Math.max(...db, -200);
     const act = db.filter((v) => v > top - 50).sort((a, b) => a - b);
     const spread = act.length > 20 ? act[Math.floor(act.length * 0.9)] - act[Math.floor(act.length * 0.1)] : null;
-    return { lufs, spread, peak: linToDb(this.peak), crest: linToDb(this.peak) - lufs, bands, blocks: this.blocks, active: this.frames > 0 };
+    const corr = this.sLL > 0 && this.sRR > 0 ? this.sLR / Math.sqrt(this.sLL * this.sRR) : 1;
+    // 가운데·옆 크기 비 (옆/가운데)
+    const mm = (this.sLL + this.sRR + 2 * this.sLR) / 4, ss = (this.sLL + this.sRR - 2 * this.sLR) / 4;
+    return { lufs, spread, corr, msRatio: mm > 0 ? ss / mm : 0, peak: linToDb(this.peak), crest: linToDb(this.peak) - lufs, bands, blocks: this.blocks, active: this.frames > 0 };
   }
 }

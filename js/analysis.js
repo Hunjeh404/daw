@@ -93,13 +93,85 @@ export function suggestTrack(E, t) {
     air: t.cat === 'bass' ? 0 : +clamp(0.2 + (airRel + 15) * 0.03, 0, 0.6).toFixed(2),
   };
   m.comp = { on: c.comp > 0 || c.trans !== 0, amt: +clamp(c.comp + (a.crest > 18 ? 0.1 : 0), 0, 1).toFixed(2), trans: c.trans };
-  m.pan = c.pan;
+  // 좌우 뒤집힘 바로잡기, 좌우가 따로 노는 넓음은 좁히기 (넓히지는 않음)
+  setWidth(E, t);
   // 잔향이 이미 많이 들어간 스템(크기 변화 폭이 좁음)은 공용 리버브를 줄이거나 보내지 않는다
   const sp = a.spread;
   const wet = sp == null ? 0 : sp < WET_DB ? 1 : sp < DRY_DB ? (DRY_DB - sp) / (DRY_DB - WET_DB) : 0;
   m.send = +(c.send * (1 - wet)).toFixed(2);
   t.ana.wet = wet;
   return true;
+}
+
+// 넓이 단계별: 패닝을 얼마나 벌릴지, 트랙 좌우 상관 목표를 얼마나 너그럽게 둘지, 마스터 폭
+const SPREAD = { orig: { pan: 0.4, corr: 0.03, width: 1 }, some: { pan: 0.8, corr: -0.1, width: 1.15 }, wide: { pan: 1.15, corr: -0.2, width: 1.3 } };
+// 넓게 벌릴 때의 악기별 자리 (부호는 먼저 가려는 쪽, 0은 가운데 고정)
+const PAN_WIDE = { vocal: 0, backing: 0, drums: 0, bass: 0, perc: 0.35, guitar: 0.45, keys: -0.4, synth: -0.5, strings: 0.35, brass: -0.35, wood: 0.4, fx: 0, other: -0.25 };
+// 좌우 상관 목표 (1이면 모노). 이보다 넓게 퍼진 스템만 좁힌다
+const CORR = { vocal: 0.95, backing: 0.5, drums: 0.9, perc: 0.6, bass: 0.98, guitar: 0.6, keys: 0.6, synth: 0.5, strings: 0.5, brass: 0.6, wood: 0.6, fx: 0.4, other: 0.6 };
+
+export function setWidth(E, t) {
+  const a = t.ana;
+  if (!a || a.corr == null) return;
+  const sp = SPREAD[E.mm.spread] || SPREAD.some;
+  let corr = a.corr, q = a.msRatio;
+  t.mix.flip = corr < -0.3;
+  if (t.mix.flip) { corr = -corr; q = q > 0 ? 1 / q : 0; }
+  const ct = Math.min(0.99, (CORR[t.cat] ?? 0.6) + sp.corr);
+  const w = q > 0 ? Math.sqrt((1 - ct) / ((1 + ct) * q)) : 1;
+  t.mix.width = +Math.min(1, w).toFixed(2);
+}
+
+// 볼륨까지 반영한 트랙 크기
+const lev = (t) => (t.ana?.lufs ?? -30) + (t.volumeDb || 0);
+
+// 패닝 자리 나누기: 가운데가 아닌 트랙을 큰 소리부터 좌우 번갈아 놓아 양쪽 무게를 맞춘다
+export function applySpread(E, list) {
+  const sp = SPREAD[E.mm.spread] || SPREAD.some;
+  const live = E.tracks.filter((t) => !t.mix.ref);
+  const side = live.filter((t) => (PAN_WIDE[t.cat] ?? PAN_WIDE.other) !== 0)
+    .sort((x, y) => lev(y) - lev(x));
+  let bal = 0;   // 지금까지 왼쪽(-)·오른쪽(+) 무게
+  for (const t of side) {
+    const base = PAN_WIDE[t.cat] ?? PAN_WIDE.other;
+    const want = Math.sign(base);
+    const dir = bal === 0 ? want : bal > 0 ? -1 : 1;
+    const pan = +(dir * Math.min(0.6, Math.abs(base) * sp.pan)).toFixed(2);
+    bal += dir * Math.pow(10, lev(t) / 10);
+    if (!list || list.includes(t)) t.mix.pan = pan;
+  }
+  for (const t of live) if ((PAN_WIDE[t.cat] ?? PAN_WIDE.other) === 0 && (!list || list.includes(t))) t.mix.pan = 0;
+  balancePans(live);
+  for (const t of live) if (!list || list.includes(t)) setWidth(E, t);
+  E.mm.space.width = sp.width;
+}
+
+// 패닝 후 좌우 크기를 어림해(패너는 스테레오 소리를 한쪽으로 밀어 넣는다) 무거운 쪽 패닝을 줄여 ±0.5dB 안으로
+function balancePans(live) {
+  const lr = (k) => {
+    let L = 0, R = 0;
+    for (const t of live) {
+      const e = Math.pow(10, lev(t) / 10);
+      // 폭을 줄인 뒤의 가운데·옆 에너지
+      let q = t.ana?.msRatio ?? 0;
+      if (t.mix.flip && q > 0) q = 1 / q;
+      q *= (t.mix.width ?? 1) ** 2;
+      const mid = e / (1 + q), side = e * q / (1 + q);
+      let p = t.mix.pan;
+      if ((p > 0 && k > 0) || (p < 0 && k < 0)) p *= 1 - Math.abs(k);
+      const a = (p + 1) * Math.PI / 4;
+      L += mid * Math.cos(a) ** 2 + side / 2;
+      R += mid * Math.sin(a) ** 2 + side / 2;
+    }
+    return 10 * Math.log10(L / R);
+  };
+  const d0 = lr(0);
+  if (Math.abs(d0) <= 0.5) return;
+  const heavy = d0 < 0 ? 1 : -1;            // 오른쪽이 무거우면 오른쪽(+) 패닝을 줄임
+  let lo = 0, hi = 1;
+  for (let i = 0; i < 20; i++) { const mid = (lo + hi) / 2; if (Math.abs(lr(heavy * mid)) > 0.5 && Math.sign(lr(heavy * mid)) === Math.sign(d0)) lo = mid; else hi = mid; }
+  const k = hi;
+  for (const t of live) if (Math.sign(t.mix.pan) === heavy) t.mix.pan = +(t.mix.pan * (1 - k)).toFixed(2);
 }
 
 // 전체 마스터: 곡 곳곳 네 군데(각 5초)를 실제 처리로 계산해 목표 음량에 맞춘다
@@ -112,7 +184,7 @@ export async function autoMaster(E, onProgress) {
   for (let k = 0; k < NS; k++) starts.push(Math.round(NS === 1 ? 0 : (dur * (0.08 + 0.84 * k / (NS - 1))) - SL / 2));
 
   mm.low = { on: true, hz: 30 };
-  mm.space = { on: true, width: 1, monoHz: 120 };
+  mm.space = { on: true, width: (SPREAD[mm.spread] || SPREAD.some).width, monoHz: 120 };
   mm.tamer = { on: true, mid: 0.2, air: 0.3 };
   mm.glue = { on: true, amt: 0.3 };
   mm.eq = { on: false, low: 0, mid: 0, high: 0 };

@@ -88,7 +88,13 @@ class TrackFx extends AudioWorkletProcessor {
     const trn = !p.bypass && p.trans && p.trans.on && p.trans.amt !== 0;
     const dk = !p.bypass && p.duck && p.duck.on && p.duck.depth > 0;
     const lim = !p.bypass && p.lim && p.lim.on;
-    if (!tam && !cmp && !trn && !dk && !lim) { oL.set(iL); oR.set(iR); this.gl = 1; return true; }
+    const flip = !p.bypass && p.st && p.st.flip;
+    const sw = !p.bypass && p.st ? p.st.width ?? 1 : 1;
+    const pan = !p.bypass && p.st ? p.st.pan || 0 : 0;
+    const ms = flip || sw !== 1 || pan !== 0;
+    // 패닝: 가운데 성분만 등전력으로 옮기고 넓은 성분은 그대로 (전체 크기 유지)
+    const ang = (pan + 1) * Math.PI / 4, gpl = Math.SQRT2 * Math.cos(ang), gpr = Math.SQRT2 * Math.sin(ang);
+    if (!tam && !cmp && !trn && !dk && !lim && !ms) { oL.set(iL); oR.set(iR); this.gl = 1; return true; }
     const key = inputs[1] && inputs[1].length ? inputs[1] : null;
     if (dk && this.keyType !== p.duck.key) this.setKey(p.duck.key);
     let thr = 0, ratio = 1;
@@ -120,6 +126,11 @@ class TrackFx extends AudioWorkletProcessor {
       for (let j = 0; j < K; j++) {
         const i = i0 + j;
         let l = iL[i], r = iR[i];
+        if (ms) {
+          if (flip) r = -r;                       // 좌우가 뒤집힌 스템 바로잡기
+          const m = (l + r) * 0.5, sd = (l - r) * 0.5 * sw;
+          l = m * gpl + sd; r = m * gpr - sd;
+        }
         if (tam) {
           const m = (l + r) * 0.5;
           this.mid.run(l, r, m); l = this.mid.oL; r = this.mid.oR;

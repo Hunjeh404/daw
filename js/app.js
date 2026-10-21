@@ -110,6 +110,7 @@ $('file').onchange = async (e) => {
   jobs.sort((a, b) => a.name.localeCompare(b.name, 'ko', { numeric: true }));
 
   const first = !engine.tracks.length;
+  const added = [];
   loading = true;
   for (let i = 0; i < jobs.length; i++) {
     sub(`불러오는 중 ${i + 1}/${jobs.length}: ${jobs[i].name}`);
@@ -117,6 +118,7 @@ $('file').onchange = async (e) => {
       const t = await engine.addTrack(jobs[i].name, await jobs[i].get());
       t.color = colorFor(t.name);
       renderTrack(t);
+      added.push(t);
     } catch (err) {
       flash(err.name === 'QuotaExceededError' ? `폰 저장공간이 부족해 ${jobs[i].name}부터 불러오지 못했습니다` : `${jobs[i].name}: 읽지 못했습니다 (${err.message})`);
       console.error(jobs[i].name, err);
@@ -129,6 +131,8 @@ $('file').onchange = async (e) => {
   if (first) fitZoom();
   afterChange();
   renderCompare();
+  // 처음 올릴 때, 또는 원곡이 있는 상태에서 스템을 더 올릴 때 자동으로 믹싱·마스터를 잡는다
+  if (added.length && (first || engine.hasRef)) await mix.autoNew(added);
   showStats();
 };
 

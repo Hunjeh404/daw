@@ -3,7 +3,7 @@ import { dbToLin } from './dsp.js';
 
 export const trackDefaults = () => ({
   ref: false,
-  pan: 0, send: 0,
+  pan: 0, send: 0, width: 1, flip: false,
   low: { on: false, hz: 80 },
   eq: { on: false, low: 0, mid: 0, high: 0 },
   tamer: { on: false, mid: 0, air: 0 },
@@ -16,6 +16,7 @@ export const masterDefaults = () => ({
   low: { on: true, hz: 30 },
   eq: { on: false, low: 0, mid: 0, high: 0 },
   space: { on: true, width: 1, monoHz: 120 },
+  spread: 'some',         // 넓이: orig | some | wide
   tamer: { on: false, mid: 0, air: 0 },
   glue: { on: false, amt: 0 },
   lim: { on: true, target: -14, ceil: -1, gainDb: 0 },
@@ -55,6 +56,7 @@ export function trackFxParams(m, raw, ref) {
     trans: { on: m.comp.on, amt: m.comp.trans },
     duck: { on: m.duck.on, depth: m.duck.depth, key: 'kick' },
     lim: m.lim,
+    st: { width: m.width ?? 1, flip: !!m.flip, pan: m.pan || 0 },
   };
 }
 
@@ -69,7 +71,7 @@ export function applyTrack(ch, m, raw, ctx, ref, now) {
   set(ch.pk.gain, on && m.eq.on ? m.eq.mid : 0);
   set(ch.hs.gain, on && m.eq.on ? m.eq.high : 0);
   if (!now) ch.fx.port.postMessage(trackFxParams(m, raw, ref));
-  set(ch.pan.pan, on ? m.pan : 0);
+  set(ch.pan.pan, 0);   // 패닝은 track-fx 안에서 한다
   set(ch.send.gain, on ? m.send * 0.8 : 0);
 }
 
