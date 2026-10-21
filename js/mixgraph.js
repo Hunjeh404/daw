@@ -20,7 +20,7 @@ export const masterDefaults = () => ({
   tamer: { on: false, mid: 0, air: 0 },
   glue: { on: false, amt: 0 },
   lim: { on: true, target: -14, ceil: -1, gainDb: 0 },
-  verb: { size: 1.8, ret: 0, duck: { on: false, depth: 4 } },
+  verb: { on: true, size: 1.8, ret: 0, duck: { on: false, depth: 4 } },
 });
 
 export const EQF = { low: 120, mid: 1000, high: 8000 };
@@ -142,6 +142,6 @@ export function applyMaster(M, mm, raw, ctx, matchDb, now) {
     M.vduck.port.postMessage(verbDuckParams(mm));
   }
   if (M.verbSize !== mm.verb.size) { M.verbSize = mm.verb.size; M.conv.buffer = makeIR(ctx, mm.verb.size); }
-  set(M.vret.gain, on ? dbToLin(mm.verb.ret) : 0);
+  set(M.vret.gain, on && mm.verb.on !== false ? dbToLin(mm.verb.ret) : 0);
   set(M.match.gain, isFinite(matchDb) ? 1 : 0);   // 원곡 비교 때는 믹스를 끈다
 }

@@ -3,7 +3,8 @@ let undoHook = () => {};
 export const setUndoHook = (fn) => { undoHook = fn; };
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
-export function slider({ label, min, max, step, get, set, show, unit }) {
+export function slider({ label, min, max, step, get, set, show, unit, noUndo, edit }) {
+  const hook = () => { if (!noUndo) undoHook(); };
   const row = document.createElement('div');
   row.className = 'row';
   row.innerHTML = `<label></label><input type="range"><span class="val"></span>`;
@@ -13,18 +14,18 @@ export function slider({ label, min, max, step, get, set, show, unit }) {
   r.value = get();
   const paint = () => { v.textContent = show(+r.value) + (unit ? ' ' + unit : ''); };
   paint();
-  r.addEventListener('pointerdown', () => undoHook());
-  r.addEventListener('keydown', () => undoHook());
+  r.addEventListener('pointerdown', hook);
+  r.addEventListener('keydown', hook);
   r.oninput = () => { set(+r.value); paint(); };
   v.onclick = () => {
     if (v.querySelector('input')) return;
     const box = document.createElement('input');
-    box.type = 'number'; box.inputMode = 'decimal'; box.step = step; box.value = show(+r.value).replace('+', '');
+    box.type = 'number'; box.inputMode = 'decimal'; box.step = step; box.value = edit ? edit(+r.value) : show(+r.value).replace('+', '');
     v.textContent = ''; v.appendChild(box); box.focus(); box.select();
     const done = (ok) => {
       if (!box.isConnected) return;
       const n = parseFloat(box.value);
-      if (ok && isFinite(n)) { undoHook(); r.value = clamp(n, +min, +max); set(+r.value); }
+      if (ok && isFinite(n)) { hook(); r.value = clamp(n, +min, +max); set(+r.value); }
       paint();
     };
     box.onkeydown = (ev) => { if (ev.key === 'Enter') box.blur(); if (ev.key === 'Escape') { box.value = 'x'; box.blur(); } };

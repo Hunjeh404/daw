@@ -295,7 +295,7 @@ export function initMix({ engine: E, pushUndo, flash, sub, onChange, setBusy, un
       b.appendChild(slider({ label: '입력 음량', min: -20, max: 24, step: 0.1, unit: 'dB', get: () => mm.lim.gainDb, show: (v) => sgn(v), set: (v) => { mm.lim.gainDb = v; changed(); } }));
       b.appendChild(note('목표 음량을 바꾸면 자동 분석을 다시 눌러 입력 음량을 맞추세요'));
     }));
-    body.appendChild(section('m-verb', '리버브 (공용)', null, (b) => {
+    body.appendChild(section('m-verb', '리버브 (공용)', { get: () => mm.verb.on !== false, set: (v) => { mm.verb.on = v; changed(); } }, (b) => {
       b.appendChild(slider({ label: '길이', min: 0.5, max: 4, step: 0.1, unit: '초', get: () => mm.verb.size, show: (v) => v.toFixed(1), set: (v) => { mm.verb.size = v; changed(); } }));
       b.appendChild(slider({ label: '전체 양', min: -24, max: 6, step: 0.5, unit: 'dB', get: () => mm.verb.ret, show: (v) => sgn(v), set: (v) => { mm.verb.ret = v; changed(); } }));
       const r = document.createElement('div');

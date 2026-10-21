@@ -1,5 +1,5 @@
 // 내보내기 탭: 출력 범위 → 파일 형식 → 곡 정보, 아래 "파일 만들기" 고정
-import { segmented, toggle } from './ui.js';
+import { segmented, toggle, slider } from './ui.js';
 import { srtText, prepareArt } from './filewrite.js';
 import { exportAudio } from './export.js';
 
@@ -8,7 +8,9 @@ const mb = (n) => (n / 1048576).toFixed(1) + 'MB';
 
 export function initExport({ engine: E, flash, sub, setBusy, onStop }) {
   const body = $('expBody'), foot = $('expFoot');
-  const st = E.exp = { scope: 'mix', fmt: 'wav', bits: 24, off: new Set(), listOpen: false };
+  const st = E.exp = { scope: 'mix', fmt: 'wav', bits: 24, off: new Set(), listOpen: false, a: 0, b: null, fi: 0, fo: 0 };
+  const SR = 44100;
+  const tfmt = (sec) => { const m = Math.floor(sec / 60), r = sec - m * 60; return `${m}:${r.toFixed(1).padStart(4, '0')}`; };
   const meta = E.meta = { title: '', artist: '', lyrics: '', art: null, srt: null, srtName: '', saveSrt: true };
   let busy = false;
 
@@ -50,6 +52,31 @@ export function initExport({ engine: E, flash, sub, setBusy, onStop }) {
       }
     }
     if (st.scope === 'stems') note(c1, '트랙마다 트랙 믹싱 설정과 그 트랙의 리버브까지 넣고, 마스터는 입력 음량만 적용합니다. 0dB를 넘으면 모든 트랙을 같은 만큼 낮춥니다. 파일들은 zip 하나로 묶습니다.');
+
+    // 구간: 앞뒤 자르기와 전체 페이드
+    const dur = E.duration / SR;
+    if (st.b == null || st.b > dur) st.b = dur;
+    if (st.a > st.b - 1) st.a = Math.max(0, st.b - 1);
+    const cR = card('구간');
+    const sum = document.createElement('div');
+    sum.className = 'xv';
+    const paintSum = () => { sum.textContent = `${tfmt(st.a)} ~ ${tfmt(st.b)} (길이 ${tfmt(st.b - st.a)})`; };
+    paintSum();
+    cR.appendChild(sum);
+    const timeSlider = (label, key, lo) => slider({ label, min: 0, max: dur.toFixed(1), step: 0.1, noUndo: true, get: () => st[key], show: tfmt, edit: (v) => v.toFixed(1),
+      set: (v) => { st[key] = key === 'a' ? Math.min(v, st.b - 1) : Math.max(v, st.a + 1); paintSum(); } });
+    cR.append(timeSlider('시작', 'a'), timeSlider('끝', 'b'));
+    const btns = document.createElement('div');
+    btns.className = 'xbtns';
+    const mk = (label, fn) => { const b = document.createElement('button'); b.textContent = label; b.onclick = () => { fn(); render(); }; btns.appendChild(b); };
+    mk('재생 위치를 시작으로', () => { st.a = Math.min(E.position / SR, st.b - 1); });
+    mk('재생 위치를 끝으로', () => { st.b = Math.max(E.position / SR, st.a + 1); });
+    mk('처음~끝 전체', () => { st.a = 0; st.b = dur; });
+    cR.appendChild(btns);
+    cR.append(
+      slider({ label: '페이드 인', min: 0, max: 10, step: 0.1, unit: '초', noUndo: true, get: () => st.fi, show: (v) => v.toFixed(1), set: (v) => { st.fi = v; } }),
+      slider({ label: '페이드 아웃', min: 0, max: 20, step: 0.1, unit: '초', noUndo: true, get: () => st.fo, show: (v) => v.toFixed(1), set: (v) => { st.fo = v; } }),
+    );
 
     // 파일 형식
     const c2 = card('파일 형식');
@@ -148,6 +175,7 @@ export function initExport({ engine: E, flash, sub, setBusy, onStop }) {
     try {
       const r = await exportAudio(E, {
         scope: st.scope, tracks, fmt: st.fmt, bits: st.bits,
+        range: { a: Math.round(st.a * SR), b: Math.round(st.b * SR), fi: Math.round(st.fi * SR), fo: Math.round(st.fo * SR) },
         meta: { title: meta.title.trim(), artist: meta.artist.trim(), lyrics: st.fmt === 'mp3' ? meta.lyrics : '', art: st.fmt === 'mp3' ? meta.art : null },
         srt: meta.srt && meta.saveSrt ? meta.srt : null,
       }, (p, pass) => sub(`${label} ${pass ? '다시 ' : ''}만드는 중 ${Math.round(p * 100)}%`));
