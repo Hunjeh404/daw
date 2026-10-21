@@ -1,5 +1,8 @@
 import { Engine, SR, PEAK, newClipId } from './engine.js';
 import { listZip, readEntry } from './zip.js';
+import { colorFor } from './cats.js';
+import { slider, setUndoHook } from './ui.js';
+import { initMix } from './mix.js';
 
 const engine = new Engine();
 const $ = (id) => document.getElementById(id);
@@ -7,6 +10,7 @@ const view = $('view'), content = $('content'), tracksEl = $('tracks'), ruler = 
 const DPR = () => window.devicePixelRatio || 1;
 
 let loading = false;
+let busy = false;              // 자동 분석 중
 let pps = 20;                 // 1초당 픽셀
 let laneW = 300;              // 파형 칸 너비(CSS px)
 let sel = null;               // { t, c }
@@ -17,7 +21,7 @@ let lastUserScroll = 0;
 let progScroll = false;
 let dirty = true;
 
-const cleared = engine.clearStore();
+const cleared = engine.prepareStore();
 
 // ---------- 공통 ----------
 const fmt = (frames, tenth) => {
@@ -30,48 +34,32 @@ const baseName = (n) => n.split('/').pop().replace(/\.(mp3|wav)$/i, '');
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 let subMsg = '';
 function sub(text) { subMsg = text; $('sub').textContent = text; }
-function flash(text) { const keep = subMsg; $('sub').textContent = text; setTimeout(() => { $('sub').textContent = keep; }, 1800); }
+function flash(text) { flash.at = Date.now(); $('sub').textContent = text; clearTimeout(flash.t); flash.t = setTimeout(() => { $('sub').textContent = subMsg; showStats(); }, 2500); }
 const redraw = () => { dirty = true; };
-
-// 트랙 이름으로 색 자동 지정
-const COLORS = [
-  [/back(ing)?[\s_-]*vo|코러스|chorus|harmon/i, '#8fd3a8'],
-  [/vo(cal|x)|보컬|lead|sing/i, '#5fbf8f'],
-  [/drum|드럼|kick|snare|hat|cymbal/i, '#d0605e'],
-  [/perc|퍼커/i, '#e07a4f'],
-  [/bass|베이스/i, '#d9a441'],
-  [/guitar|기타/i, '#6b86e0'],
-  [/piano|피아노|key|건반|organ|rhodes/i, '#a7adb7'],
-  [/synth|신스|pad|lead[\s_-]*synth/i, '#b07fd6'],
-  [/string|스트링|violin|viola|cello|현악/i, '#57b8c9'],
-  [/brass|브라스|trumpet|trombone|horn/i, '#e6c35c'],
-  [/wood|flute|sax|clarinet|목관/i, '#9bbf5f'],
-  [/fx|effect|효과|sfx/i, '#7d8794'],
-];
-const SPARE = ['#5f8fbf', '#c27aa8', '#7fb8a0', '#c9925f', '#8c86d9', '#6fa3b5'];
-function colorFor(name) {
-  for (const [re, c] of COLORS) if (re.test(name)) return c;
-  let h = 0;
-  for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-  return SPARE[h % SPARE.length];
-}
 
 // ---------- 되돌리기 ----------
 function snapshot() {
-  return engine.tracks.map((t) => ({ clips: t.clips.map((c) => ({ ...c })), xfade: t.xfade, volumeDb: t.volumeDb, muted: t.muted, solo: t.solo }));
+  return {
+    tracks: engine.tracks.map((t) => ({ clips: t.clips.map((c) => ({ ...c })), xfade: t.xfade, volumeDb: t.volumeDb, muted: t.muted, solo: t.solo, mix: structuredClone(t.mix) })),
+    mm: structuredClone(engine.mm),
+  };
 }
 function restore(s) {
   engine.tracks.forEach((t, i) => {
-    Object.assign(t, { clips: s[i].clips.map((c) => ({ ...c })), xfade: s[i].xfade, volumeDb: s[i].volumeDb, muted: s[i].muted, solo: s[i].solo });
+    const x = s.tracks[i];
+    Object.assign(t, { clips: x.clips.map((c) => ({ ...c })), xfade: x.xfade, volumeDb: x.volumeDb, muted: x.muted, solo: x.solo, mix: structuredClone(x.mix) });
     engine.updateSegs(t);
   });
-  engine.applyGains();
+  engine.mm = structuredClone(s.mm);
+  engine.applyAll();
+  if (document.getElementById('tab-mix').classList.contains('show')) mix.render();
   if (sel) {
     const c = sel.t.clips.find((x) => x.id === sel.c.id);
     sel = c ? { t: sel.t, c } : null;
   }
   afterChange();
 }
+setUndoHook(() => pushUndo());
 function pushUndo() {
   undoStack.push(snapshot());
   if (undoStack.length > 60) undoStack.shift();
@@ -79,8 +67,8 @@ function pushUndo() {
   updateUndoBtns();
 }
 function updateUndoBtns() {
-  $('undo').disabled = !undoStack.length;
-  $('redo').disabled = !redoStack.length;
+  for (const b of document.querySelectorAll('#undo, .undo-btn')) b.disabled = !undoStack.length;
+  for (const b of document.querySelectorAll('#redo, .redo-btn')) b.disabled = !redoStack.length;
 }
 $('undo').onclick = () => { if (!undoStack.length) return; redoStack.push(snapshot()); restore(undoStack.pop()); updateUndoBtns(); };
 $('redo').onclick = () => { if (!redoStack.length) return; undoStack.push(snapshot()); restore(redoStack.pop()); updateUndoBtns(); };
@@ -167,6 +155,7 @@ function renderTrack(t) {
 
 function updateHead(t) {
   if (!t.row) return;
+  t.row.querySelector('.name').textContent = t.name + (t.mix.ref ? ' (원곡)' : '');
   t.row.querySelector('.m').classList.toggle('on', t.muted);
   t.row.querySelector('.s').classList.toggle('on', t.solo);
 }
@@ -275,7 +264,7 @@ function drawLane(t) {
       let env = 1;
       if (cl.fi > 0 && fm < cl.fi) env *= Math.sin((Math.PI / 2) * Math.max(0, fm) / cl.fi);
       if (cl.fo > 0 && cl.len - fm < cl.fo) env *= Math.sin((Math.PI / 2) * Math.max(0, cl.len - fm) / cl.fo);
-      const y = Math.max(0.5, m * env * amp);
+      const y = Math.max(0.5, Math.min(1, m * t.scale) * env * amp);
       g.fillRect(x, mid - y, 1, y * 2);
     }
     // 페이드 선
@@ -392,36 +381,6 @@ function bindLane(t) {
 }
 
 // ---------- 편집 패널 ----------
-function slider({ label, min, max, step, get, set, show, unit }) {
-  const row = document.createElement('div');
-  row.className = 'row';
-  row.innerHTML = `<label></label><input type="range"><span class="val"></span>`;
-  row.querySelector('label').textContent = label;
-  const r = row.querySelector('input'), v = row.querySelector('.val');
-  Object.assign(r, { min, max, step });
-  r.value = get();
-  const paint = () => { v.textContent = show(+r.value) + (unit ? ' ' + unit : ''); };
-  paint();
-  r.addEventListener('pointerdown', pushUndo);
-  r.addEventListener('keydown', pushUndo);
-  r.oninput = () => { set(+r.value); paint(); };
-  v.onclick = () => {
-    if (v.querySelector('input')) return;
-    const box = document.createElement('input');
-    box.type = 'number'; box.inputMode = 'decimal'; box.step = step; box.value = show(+r.value);
-    v.textContent = ''; v.appendChild(box); box.focus(); box.select();
-    const done = (ok) => {
-      if (!box.isConnected) return;
-      const n = parseFloat(box.value);
-      if (ok && isFinite(n)) { pushUndo(); r.value = clamp(n, +min, +max); set(+r.value); }
-      paint();
-    };
-    box.onkeydown = (ev) => { if (ev.key === 'Enter') box.blur(); if (ev.key === 'Escape') { box.value = 'x'; box.blur(); } };
-    box.onblur = () => done(true);
-  };
-  return row;
-}
-
 function renderPanel() {
   const p = $('panel');
   if (!sel || !engine.tracks.includes(sel.t) || !sel.t.clips.includes(sel.c)) { sel = null; p.hidden = true; return; }
@@ -525,18 +484,27 @@ $('loop').onclick = async () => {
 };
 engine.onEnd = () => { updatePlayBtn(); redraw(); };
 
+// ---------- 믹싱 탭 ----------
+const mix = initMix({
+  engine, pushUndo, flash, sub,
+  setBusy: (b) => { busy = b; if (!b) showStats(); },
+  undo: () => $('undo').click(), redo: () => $('redo').click(),
+  onChange: (what) => { if (what === 'stop') updatePlayBtn(); for (const t of engine.tracks) updateHead(t); redraw(); },
+});
+
 // ---------- 탭 ----------
 for (const b of document.querySelectorAll('nav button')) {
   b.onclick = () => {
     for (const x of document.querySelectorAll('nav button')) x.classList.toggle('on', x === b);
     for (const s of document.querySelectorAll('.tab')) s.classList.toggle('show', s.id === 'tab-' + b.dataset.tab);
+    if (b.dataset.tab === 'mix') { if (sel) mix.select(sel.t); mix.render(); }
     layout();
   };
 }
 
 // ---------- 상태 ----------
 function showStats() {
-  if (!engine.tracks.length || loading) return;
+  if (!engine.tracks.length || loading || busy || flash.t && Date.now() - (flash.at || 0) < 2500) return;
   const under = engine.tracks.reduce((s, t) => s + t.under, 0);
   sub(`${engine.tracks.length}트랙 · 끊김 ${under}회`);
 }

@@ -2,6 +2,10 @@
 // 재생 위치 앞쪽에 필요한 원본 블록만 조금씩 읽어 트랙별 프로세서로 보낸다.
 // 편집은 원본을 건드리지 않고 클립(원본의 어디를 타임라인 어디에 놓을지)만 바꾼다.
 
+import { buildTrackChain, applyTrack, buildMaster, applyMaster, trackDefaults, masterDefaults } from './mixgraph.js';
+import { category } from './cats.js';
+import { dbToLin } from './dsp.js';
+
 export const SR = 44100;
 export const BLOCK = 32768;      // 프레임 (약 0.74초)
 export const PEAK = 1024;        // 파형 한 칸이 맡는 프레임 수
@@ -21,24 +25,44 @@ export class Engine {
     this.pausedPos = 0;
     this.loop = { on: false, start: 0, end: 0 };
     this.onEnd = null;
+    this.mm = masterDefaults();
+    this.mode = 'apply';         // apply | raw | ref
+    this.ana = {};               // 자동 분석 결과 (음량 맞춤용)
+    this.meter = null;
   }
 
   async init() {
     if (this.ctx) return;
+    await this.prepareStore();
     this.ctx = new AudioContext({ sampleRate: SR, latencyHint: 'playback' });
     await this.ctx.audioWorklet.addModule('js/track-worklet.js');
-    this.master = this.ctx.createGain();
-    this.master.connect(this.ctx.destination);
-    this.root = await navigator.storage.getDirectory();
+    await this.ctx.audioWorklet.addModule('js/fx-worklet.js');
+    this.M = buildMaster(this.ctx, this.ctx.destination);
+    this.master = this.M.match;
+    this.M.mfx.port.onmessage = (e) => { if (e.data.type === 'meter') this.meter = e.data; };
+    this.applyAll();
     setInterval(() => this.feed(), 300);
   }
 
-  // 이전 세션이 남긴 임시 음원 정리
-  async clearStore() {
-    const root = await navigator.storage.getDirectory();
-    for await (const name of root.keys()) {
-      if (name.endsWith('.pcm')) await root.removeEntry(name).catch(() => {});
+  // 탭마다 자기 폴더(s-<id>)를 쓰고, 그 탭이 열려 있는 동안 잠금을 쥔다.
+  // 시작할 때는 잠금이 풀린(닫힌 탭의) 폴더만 지운다.
+  prepareStore() {
+    if (!this.storeReady) {
+      this.storeReady = (async () => {
+        const root = await navigator.storage.getDirectory();
+        const sid = 's-' + crypto.randomUUID();
+        await new Promise((ok) => navigator.locks.request('daw-' + sid, () => { ok(); return new Promise(() => {}); }));
+        const held = new Set((await navigator.locks.query()).held.map((l) => l.name));
+        const stale = [];
+        for await (const [name, h] of root.entries()) {
+          if (h.kind === 'directory' && name.startsWith('s-') && !held.has('daw-' + name)) stale.push(name);
+          else if (h.kind === 'file' && name.endsWith('.pcm')) stale.push(name);
+        }
+        for (const name of stale) await root.removeEntry(name, { recursive: true }).catch(() => {});
+        this.root = await root.getDirectoryHandle(sid, { create: true });
+      })();
     }
+    return this.storeReady;
   }
 
   get duration() {
@@ -51,13 +75,19 @@ export class Engine {
     const buf = await this.ctx.decodeAudioData(arrayBuffer);
     const ch = Math.min(buf.numberOfChannels, 2);
     const frames = buf.length;
+    let peak = 0;
+    for (let c = 0; c < ch; c++) {
+      const d = buf.getChannelData(c);
+      for (let i = 0; i < frames; i++) { const a = d[i] < 0 ? -d[i] : d[i]; if (a > peak) peak = a; }
+    }
+    const scale = peak > 1 ? peak : 1;
     const id = crypto.randomUUID();
     const fh = await this.root.getFileHandle(id + '.pcm', { create: true });
     const peaks = new Float32Array(Math.ceil(frames / PEAK));
     let w;
     try {
       w = await fh.createWritable();
-      await this.writePcm(w, buf, ch, frames, peaks);
+      await this.writePcm(w, buf, ch, frames, peaks, scale);
     } catch (err) {
       try { await w?.abort(); } catch {}
       await this.root.removeEntry(id + '.pcm').catch(() => {});
@@ -69,12 +99,23 @@ export class Engine {
       outputChannelCount: [2],
       processorOptions: { channels: ch },
     });
-    const gain = this.ctx.createGain();
-    node.connect(gain).connect(this.master);
+    const fxc = buildTrackChain(this.ctx);
+    fxc.trim.gain.value = scale;
+    node.connect(fxc.input);
+    const toSum = this.ctx.createGain();
+    const refGain = this.ctx.createGain();
+    refGain.gain.value = 0;
+    fxc.out.connect(toSum).connect(this.M.sum);
+    fxc.send.connect(this.M.vin);
+    fxc.trim.connect(refGain).connect(this.ctx.destination);
+    this.M.drumKey.connect(fxc.fx, 0, 1);
+    const cat = category(name);
+    if (cat === 'drums') toSum.connect(this.M.drumKey);
+    if (cat === 'vocal') toSum.connect(this.M.vocalKey);
     const t = {
-      id, name, frames, ch, peaks,
+      id, name, frames, ch, peaks, scale,
       file: await fh.getFile(),
-      node, gain, sent: new Set(),
+      node, fxc, toSum, refGain, cat, sent: new Set(), mix: trackDefaults(),
       clips: [{ id: newClipId(), start: 0, src: 0, len: frames, fi: 0, fo: 0 }],
       xfade: true, volumeDb: 0, muted: false, solo: false, under: 0,
       segs: [],
@@ -84,10 +125,12 @@ export class Engine {
     };
     this.tracks.push(t);
     this.updateSegs(t);
+    this.applyAll();
     return t;
   }
 
-  async writePcm(w, buf, ch, frames, peaks) {
+  async writePcm(w, buf, ch, frames, peaks, scale) {
+    const k = 1 / scale;
     const L = buf.getChannelData(0);
     const R = ch === 2 ? buf.getChannelData(1) : null;
     for (let s = 0; s < frames; s += BLOCK) {
@@ -95,13 +138,11 @@ export class Engine {
       const out = new Int16Array(n * ch);
       for (let i = 0; i < n; i++) {
         const f = s + i;
-        let l = L[f];
-        l = l > 1 ? 1 : l < -1 ? -1 : l;
+        const l = L[f] * k;
         out[i * ch] = l * 32767;
         let a = l < 0 ? -l : l;
         if (R) {
-          let r = R[f];
-          r = r > 1 ? 1 : r < -1 ? -1 : r;
+          const r = R[f] * k;
           out[i * ch + 1] = r * 32767;
           const ar = r < 0 ? -r : r;
           if (ar > a) a = ar;
@@ -153,14 +194,29 @@ export class Engine {
     this.feed();
   }
 
-  applyGains() {
-    const anySolo = this.tracks.some((t) => t.solo);
+  // 볼륨·음소거·솔로·처리 설정·비교 모드를 모두 반영
+  applyAll() {
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    const set = (param, v) => param.setTargetAtTime(v, now, 0.015);
+    const raw = this.mode === 'raw', refMode = this.mode === 'ref';
+    const live = this.tracks.filter((t) => !t.mix.ref);
+    const anySolo = live.some((t) => t.solo);
     for (const t of this.tracks) {
-      const on = !t.muted && (!anySolo || t.solo);
-      const g = on ? Math.pow(10, t.volumeDb / 20) : 0;
-      t.gain.gain.setTargetAtTime(g, this.ctx.currentTime, 0.01);
+      const on = !t.muted && (!anySolo || t.solo || t.mix.ref);
+      const isRef = t.mix.ref;
+      set(t.fxc.fader.gain, on && !isRef ? (raw ? 1 : dbToLin(t.volumeDb)) : 0);
+      set(t.toSum.gain, isRef ? 0 : 1);
+      set(t.refGain.gain, refMode && isRef && on ? dbToLin(this.refMatchDb()) : 0);
+      applyTrack(t.fxc, t.mix, raw || isRef, this.ctx, t.ana?.lufs ?? -20);
     }
+    applyMaster(this.M, this.mm, raw, this.ctx, refMode ? -Infinity : raw ? this.rawMatchDb() : 0);
   }
+  applyGains() { this.applyAll(); }
+  get hasRef() { return this.tracks.some((t) => t.mix.ref); }
+  rawMatchDb() { const a = this.ana; return a.procLufs != null && a.rawLufs != null ? a.procLufs - a.rawLufs : 0; }
+  refMatchDb() { const a = this.ana; return a.procLufs != null && a.refLufs != null ? a.procLufs - a.refLufs : 0; }
+  setMode(m) { this.mode = m; this.applyAll(); }
 
   mapPos(raw) {
     const L = this.loop;
@@ -238,6 +294,7 @@ export class Engine {
     this.startCtxFrame = ctxFrame;
     const loop = this.loop.on ? { start: this.loop.start, end: this.loop.end } : null;
     for (const t of this.tracks) t.node.port.postMessage({ type: 'play', ctxFrame, pos, loop });
+    this.M.mfx.port.postMessage({ type: 'reset' });
     this.playing = true;
     this.feed();
   }
