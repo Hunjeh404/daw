@@ -599,7 +599,7 @@ $('play').onclick = async () => {
   if (engine.playing) engine.stop(); else await engine.play();
   updatePlayBtn();
 };
-$('home').onclick = async () => { await engine.seek(engine.loop.on ? engine.loop.start : 0); redraw(); };
+$('home').onclick = async () => { await engine.seek(engine.prev ? engine.prev.a : engine.loop.on ? engine.loop.start : 0); redraw(); };
 $('loop').onclick = async () => {
   if (!engine.tracks.length) return;
   const L = engine.loop;
@@ -703,6 +703,7 @@ for (const b of document.querySelectorAll('nav button')) {
     for (const s of document.querySelectorAll('.tab')) s.classList.toggle('show', s.id === 'tab-' + b.dataset.tab);
     if (b.dataset.tab === 'mix') { if (sel) mix.select(sel.t); mix.render(); }
     if (b.dataset.tab === 'export') exp.render();
+    exp.setActive(b.dataset.tab === 'export');
     layout();
   };
 }
@@ -731,6 +732,7 @@ setInterval(showStats, 2000);
       dirty = true;
     }
     if (dirty) { dirty = false; draw(); }
+    exp.tick();
   }
   requestAnimationFrame(loop);
 })();

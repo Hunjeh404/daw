@@ -34,6 +34,7 @@ export class Engine {
     this.nextIdx = 1;
     this.ana = {};               // 자동 분석 결과 (음량 맞춤용)
     this.meter = null;
+    this.prev = null;            // 내보내기 미리듣기 { a, b, fi, fo, off } (프레임) — 구간·페이드·포함 트랙대로 재생
   }
 
   async init() {
@@ -42,7 +43,9 @@ export class Engine {
     this.ctx = new AudioContext({ sampleRate: SR, latencyHint: 'playback' });
     await this.ctx.audioWorklet.addModule('js/track-worklet.js');
     await this.ctx.audioWorklet.addModule('js/fx-worklet.js');
-    this.M = buildMaster(this.ctx, this.ctx.destination);
+    this.out = this.ctx.createGain();   // 미리듣기 페이드
+    this.out.connect(this.ctx.destination);
+    this.M = buildMaster(this.ctx, this.out);
     this.master = this.M.match;
     this.M.mfx.port.onmessage = (e) => { if (e.data.type === 'meter') this.meter = e.data; };
     this.applyAll();
@@ -139,7 +142,7 @@ export class Engine {
     refGain.gain.value = 0;
     fxc.out.connect(toSum).connect(this.M.sum);
     fxc.send.connect(this.M.vin);
-    fxc.trim.connect(refGain).connect(this.ctx.destination);
+    fxc.trim.connect(refGain).connect(this.out);
     this.M.drumKey.connect(fxc.fx, 0, 1);
     const cat = opts.cat || category(name);
     if (cat === 'drums') toSum.connect(this.M.drumKey);
@@ -258,8 +261,9 @@ export class Engine {
     const raw = this.mode === 'raw', refMode = this.mode === 'ref';
     const live = this.tracks.filter((t) => !t.mix.ref);
     const anySolo = live.some((t) => t.solo);
+    const P = this.prev;
     for (const t of this.tracks) {
-      const on = !t.muted && (!anySolo || t.solo || t.mix.ref);
+      const on = P ? !P.off.has(t.id) : !t.muted && (!anySolo || t.solo || t.mix.ref);
       const isRef = t.mix.ref;
       set(t.fxc.fader.gain, on && !isRef ? (raw ? 1 : dbToLin(t.volumeDb)) : 0);
       set(t.toSum.gain, isRef ? 0 : 1);
@@ -274,8 +278,10 @@ export class Engine {
   refMatchDb() { const a = this.ana; return a.procLufs != null && a.refLufs != null ? a.procLufs - a.refLufs : 0; }
   setMode(m) { this.mode = m; this.applyAll(); }
 
+  get effLoop() { return this.prev ? { on: false, start: 0, end: 0 } : this.loop; }
+
   mapPos(raw) {
-    const L = this.loop;
+    const L = this.effLoop;
     if (L.on && this.startPos < L.end && raw >= L.end) return L.start + ((raw - L.end) % (L.end - L.start));
     return raw;
   }
@@ -287,7 +293,7 @@ export class Engine {
 
   // 지금부터 AHEAD 동안 재생될 타임라인 구간들 (구간 반복이면 처음으로 돌아간 부분까지)
   windows(pos, ahead) {
-    const L = this.loop;
+    const L = this.effLoop;
     if (L.on && this.startPos < L.end && pos < L.end && pos + ahead > L.end) {
       const rest = Math.min(pos + ahead - L.end, L.end - L.start);
       return [[pos, L.end], [L.start, L.start + rest]];
@@ -326,6 +332,8 @@ export class Engine {
   feed() {
     if (!this.playing) return;
     const pos = this.position;
+    const P = this.prev;
+    if (P && pos >= P.b) { this.stop(); this.pausedPos = P.a; this.onEnd && this.onEnd(); return; }
     if (!this.loop.on && pos >= this.duration) { this.stop(); this.pausedPos = 0; this.onEnd && this.onEnd(); return; }
     const wins = this.windows(Math.max(0, pos - BLOCK), AHEAD + BLOCK);
     for (const t of this.tracks) {
@@ -344,14 +352,18 @@ export class Engine {
     if (this.playing || !this.tracks.length) return;
     await this.ctx.resume();
     let pos = this.pausedPos;
-    if (!this.loop.on && pos >= this.duration) pos = 0;
+    const P = this.prev;
+    if (P && (pos < P.a || pos >= P.b)) pos = P.a;
+    if (!P && !this.loop.on && pos >= this.duration) pos = 0;
     this.startPos = pos;
     // 시작 직후 3초 분량은 모든 트랙에 확실히 넣어 둔다
     const wins = this.windows(pos, 3 * SR);
     await Promise.all(this.tracks.flatMap((t) => [...this.neededBlocks(t, wins)].map((b) => this.sendBlock(t, b))));
     const ctxFrame = Math.round((this.ctx.currentTime + 0.1) * SR);
     this.startCtxFrame = ctxFrame;
-    const loop = this.loop.on ? { start: this.loop.start, end: this.loop.end } : null;
+    const EL = this.effLoop;
+    const loop = EL.on ? { start: EL.start, end: EL.end } : null;
+    this.schedFade(pos, ctxFrame / SR);
     for (const t of this.tracks) t.node.port.postMessage({ type: 'play', ctxFrame, pos, loop });
     this.M.mfx.port.postMessage({ type: 'reset' });
     this.playing = true;
@@ -362,11 +374,41 @@ export class Engine {
     if (!this.playing) return;
     this.pausedPos = this.position;
     this.playing = false;
+    this.schedFade();
     for (const t of this.tracks) {
       t.node.port.postMessage({ type: 'stop' });
       t.node.port.postMessage({ type: 'clear' });
       t.sent.clear();
     }
+  }
+
+  // 미리듣기 페이드를 재생 시작 시각에 맞춰 미리 그려 둔다. 인자 없으면 원래대로(1)
+  schedFade(pos, at) {
+    const g = this.out.gain, now = this.ctx.currentTime;
+    g.cancelScheduledValues(0);
+    g.setValueAtTime(g.value, now);
+    const P = this.prev;
+    if (pos == null || !P) { g.setTargetAtTime(1, now, 0.01); return; }
+    const STEP = SR / 200, n = Math.max(2, Math.ceil((P.b - pos) / STEP) + 1);
+    const curve = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const f = pos + i * STEP;
+      let v = 1;
+      if (P.fi && f - P.a < P.fi) v *= Math.sin(Math.PI / 2 * Math.max(0, f - P.a) / P.fi);
+      if (P.fo && P.b - f < P.fo) v *= Math.sin(Math.PI / 2 * Math.max(0, P.b - f) / P.fo);
+      curve[i] = v;
+    }
+    const dur = (n - 1) * STEP / SR;
+    g.setValueCurveAtTime(curve, at, dur);
+    g.setValueAtTime(0, at + dur + 0.001);   // 끝 지점 뒤는 조용히 (정지 확인 전 잠깐 새는 소리 막기)
+  }
+
+  // 내보내기 탭: p = { a, b, fi, fo, off } (프레임) 또는 null
+  async setPreview(p) {
+    this.prev = p;
+    if (!this.ctx) return;
+    this.applyAll();
+    if (this.playing) await this.seek(this.position);
   }
 
   async seek(frame) {

@@ -2,6 +2,8 @@
 import { segmented, toggle, slider } from './ui.js';
 import { srtText, prepareArt } from './filewrite.js';
 import { exportAudio } from './export.js';
+import { PEAK } from './engine.js';
+import { dbToLin } from './dsp.js';
 
 const $ = (id) => document.getElementById(id);
 const mb = (n) => (n / 1048576).toFixed(1) + 'MB';
@@ -13,6 +15,8 @@ export function initExport({ engine: E, flash, sub, setBusy, onStop }) {
   const tfmt = (sec) => { const m = Math.floor(sec / 60), r = sec - m * 60; return `${m}:${r.toFixed(1).padStart(4, '0')}`; };
   const meta = E.meta = { title: '', artist: '', lyrics: '', art: null, srt: null, srtName: '', saveSrt: true };
   let busy = false;
+  let active = false;          // 내보내기 탭이 열려 있는지 (열려 있으면 재생에 구간·페이드·포함 트랙 반영)
+  let wave = null;             // 구간 파형 { cv, env, draw }
 
   const live = () => E.tracks.filter((t) => !t.mix.ref);
   const included = () => live().filter((t) => !st.off.has(t.id));
@@ -65,8 +69,9 @@ export function initExport({ engine: E, flash, sub, setBusy, onStop }) {
     const paintSum = () => { sum.textContent = `${tfmt(st.a)} ~ ${tfmt(st.b)} (길이 ${tfmt(st.b - st.a)})`; };
     paintSum();
     cR.appendChild(sum);
+    cR.appendChild(waveBox(dur, paintSum));
     const timeSlider = (label, key, lo) => slider({ label, min: 0, max: dur.toFixed(1), step: 0.1, noUndo: true, get: () => st[key], show: tfmt, edit: (v) => v.toFixed(1),
-      set: (v) => { st[key] = key === 'a' ? Math.min(v, st.b - 1) : Math.max(v, st.a + 1); paintSum(); } });
+      set: (v) => { st[key] = key === 'a' ? Math.min(v, st.b - 1) : Math.max(v, st.a + 1); paintSum(); wave?.draw(); syncPrev(); } });
     cR.append(timeSlider('시작', 'a'), timeSlider('끝', 'b'));
     const btns = document.createElement('div');
     btns.className = 'xbtns';
@@ -76,8 +81,8 @@ export function initExport({ engine: E, flash, sub, setBusy, onStop }) {
     mk('처음~끝 전체', () => { st.a = 0; st.b = dur; });
     cR.appendChild(btns);
     cR.append(
-      slider({ label: '페이드 인', min: 0, max: 10, step: 0.1, unit: '초', noUndo: true, get: () => st.fi, show: (v) => v.toFixed(1), set: (v) => { st.fi = v; } }),
-      slider({ label: '페이드 아웃', min: 0, max: 20, step: 0.1, unit: '초', noUndo: true, get: () => st.fo, show: (v) => v.toFixed(1), set: (v) => { st.fo = v; } }),
+      slider({ label: '페이드 인', min: 0, max: 10, step: 0.1, unit: '초', noUndo: true, get: () => st.fi, show: (v) => v.toFixed(1), set: (v) => { st.fi = v; wave?.draw(); syncPrev(); } }),
+      slider({ label: '페이드 아웃', min: 0, max: 20, step: 0.1, unit: '초', noUndo: true, get: () => st.fo, show: (v) => v.toFixed(1), set: (v) => { st.fo = v; wave?.draw(); syncPrev(); } }),
     );
 
     // 파일 형식
@@ -137,6 +142,139 @@ export function initExport({ engine: E, flash, sub, setBusy, onStop }) {
 
     paintFoot();
     body.scrollTop = y;
+    syncPrev();
+  }
+
+  // 미리듣기: 탭이 열려 있으면 파일과 같게 (구간·전체 페이드·포함 트랙) 재생. 연달아 바뀌면 잠깐 모았다가 한 번에
+  let prevT = 0;
+  function syncPrev() {
+    clearTimeout(prevT);
+    prevT = setTimeout(() => {
+      const on = active && E.tracks.length && !E.loading && st.b != null;
+      E.setPreview(on ? { a: Math.round(st.a * SR), b: Math.round(st.b * SR), fi: Math.round(st.fi * SR), fo: Math.round(st.fo * SR), off: new Set(st.off) } : null);
+    }, 120);
+  }
+  function setActive(v) {
+    active = v;
+    if (!v) wave = null;
+    syncPrev();
+  }
+
+  // 구간 파형: 포함 트랙을 합친 모양. 아래 손잡이로 시작·끝, 위 동그라미로 페이드 인·아웃, 누르면 그 위치로 이동
+  function waveBox(dur, paintSum) {
+    const cv = document.createElement('canvas');
+    cv.className = 'xwave';
+    const H = 96;
+    let env = null, W = 0;
+    const d = () => window.devicePixelRatio || 1;
+    const fx = (sec) => (sec / dur) * W;
+    function build() {
+      W = cv.clientWidth;
+      if (!W) return;
+      cv.width = Math.round(W * d()); cv.height = Math.round(H * d());
+      env = new Float32Array(W);
+      const fpp = (dur * SR) / W;    // 한 칸이 맡는 프레임
+      for (const t of included()) {
+        const g = dbToLin(t.volumeDb);
+        for (const c of t.clips) {
+          const src = E.sources.get(c.sid);
+          if (!src || src.missing) continue;
+          const pk = src.peaks, sc = src.scale * g;
+          const x0 = Math.max(0, Math.floor(c.start / fpp)), x1 = Math.min(W, Math.ceil((c.start + c.len) / fpp));
+          for (let x = x0; x < x1; x++) {
+            const f0 = Math.max(0, x * fpp - c.start), f1 = Math.min(c.len, (x + 1) * fpp - c.start);
+            if (f1 <= f0) continue;
+            let m = 0;
+            for (let k = Math.floor((c.src + f0) / PEAK), e = Math.floor((c.src + f1) / PEAK); k <= e && k < pk.length; k++) if (pk[k] > m) m = pk[k];
+            env[x] += m * sc;
+          }
+        }
+      }
+      let mx = 0;
+      for (const v of env) if (v > mx) mx = v;
+      if (mx > 0) for (let i = 0; i < W; i++) env[i] /= mx;
+    }
+    function gainAt(sec) {
+      let v = 1;
+      if (sec < st.a || sec > st.b) return 0;
+      if (st.fi && sec - st.a < st.fi) v *= Math.sin(Math.PI / 2 * (sec - st.a) / st.fi);
+      if (st.fo && st.b - sec < st.fo) v *= Math.sin(Math.PI / 2 * (st.b - sec) / st.fo);
+      return v;
+    }
+    function draw() {
+      if (!cv.isConnected) return;
+      if (!env || cv.clientWidth !== W) build();
+      if (!env) return;
+      const g = cv.getContext('2d');
+      g.setTransform(d(), 0, 0, d(), 0, 0);
+      g.fillStyle = '#181a1f'; g.fillRect(0, 0, W, H);
+      const mid = H / 2, amp = H / 2 - 14;
+      const xa = fx(st.a), xb = fx(st.b);
+      for (let x = 0; x < W; x++) {
+        const y = Math.max(0.5, env[x] * amp);
+        const sec = ((x + 0.5) / W) * dur;
+        const k = gainAt(sec);
+        g.fillStyle = 'rgba(138,143,153,.28)';
+        g.fillRect(x, mid - y, 1, y * 2);
+        if (k > 0) { g.fillStyle = '#e9a23b'; const yy = Math.max(0.5, y * k); g.fillRect(x, mid - yy, 1, yy * 2); }
+      }
+      // 페이드 선
+      g.strokeStyle = 'rgba(232,233,236,.8)'; g.lineWidth = 1.5;
+      const curve = (s0, s1) => {
+        g.beginPath();
+        for (let i = 0; i <= 40; i++) { const sec = s0 + ((s1 - s0) * i) / 40; const x = fx(sec), y = H - 6 - gainAt(sec) * (H - 18); i ? g.lineTo(x, y) : g.moveTo(x, y); }
+        g.stroke();
+      };
+      if (st.fi > 0) curve(st.a, st.a + st.fi);
+      if (st.fo > 0) curve(st.b - st.fo, st.b);
+      // 시작·끝 막대와 아래 손잡이
+      g.fillStyle = '#e9a23b';
+      for (const x of [xa, xb]) { g.fillRect(x - 1, 0, 2, H); g.fillRect(x - 7, H - 18, 14, 18); }
+      // 페이드 손잡이 (위)
+      g.fillStyle = '#e8e9ec';
+      for (const x of [fx(st.a + st.fi), fx(st.b - st.fo)]) { g.beginPath(); g.arc(x, 9, 6, 0, Math.PI * 2); g.fill(); }
+      // 재생 위치
+      const px = fx(E.position / SR);
+      g.fillStyle = '#ffffff'; g.fillRect(px - 1, 0, 2, H);
+    }
+    // 끌기
+    let drag = null;
+    const pt = (e) => { const r = cv.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+    cv.addEventListener('pointerdown', (e) => {
+      const [x, y] = pt(e);
+      const hs = [['a', fx(st.a), H - 9], ['b', fx(st.b), H - 9], ['fi', fx(st.a + st.fi), 9], ['fo', fx(st.b - st.fo), 9]];
+      let best = null, bd = 30;
+      for (const h of hs) { const dd = Math.hypot(x - h[1], (y - h[2]) * 0.6); if (dd < bd) { bd = dd; best = h[0]; } }
+      drag = { key: best, x0: x, moved: false };
+      cv.setPointerCapture(e.pointerId);
+    });
+    cv.addEventListener('pointermove', (e) => {
+      if (!drag) return;
+      const [x] = pt(e);
+      if (Math.abs(x - drag.x0) > 4) drag.moved = true;
+      if (!drag.key || !drag.moved) return;
+      const sec = Math.max(0, Math.min(dur, (x / W) * dur));
+      const r1 = (v) => Math.round(v * 10) / 10;
+      if (drag.key === 'a') st.a = r1(Math.min(sec, st.b - 1));
+      if (drag.key === 'b') st.b = r1(Math.max(sec, st.a + 1));
+      if (drag.key === 'fi') st.fi = r1(Math.max(0, Math.min(sec - st.a, 10)));
+      if (drag.key === 'fo') st.fo = r1(Math.max(0, Math.min(st.b - sec, 20)));
+      const room = st.b - st.a;
+      if (st.fi + st.fo > room) { if (drag.key === 'fo') st.fo = r1(room - st.fi); else st.fi = r1(Math.max(0, room - st.fo)); }
+      paintSum(); draw();
+    });
+    const end = (e, cancel) => {
+      if (!drag) return;
+      const dd = drag; drag = null;
+      if (cancel) return;
+      if (dd.key && dd.moved) { render(); return; }
+      if (!dd.moved) { const [x] = pt(e); E.seek(Math.round(Math.max(0, Math.min(dur, (x / W) * dur)) * SR)); }
+    };
+    cv.addEventListener('pointerup', (e) => end(e, false));
+    cv.addEventListener('pointercancel', (e) => end(e, true));
+    wave = { cv, draw };
+    requestAnimationFrame(draw);
+    return cv;
   }
 
   function field(label, key, ph) {
@@ -204,5 +342,13 @@ export function initExport({ engine: E, flash, sub, setBusy, onStop }) {
     render();
   };
 
-  return { render };
+  // 화면 갱신 때마다: 재생 중이면 파형의 재생 위치를 다시 그림
+  let lastPos = -1;
+  function tick() {
+    if (!wave || !wave.cv.isConnected) return;
+    const p = E.position;
+    if (p !== lastPos) { lastPos = p; wave.draw(); }
+  }
+
+  return { render, setActive, tick };
 }
