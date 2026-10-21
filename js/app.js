@@ -4,6 +4,8 @@ import { colorFor } from './cats.js';
 import { slider, setUndoHook, segmented } from './ui.js';
 import { initMix } from './mix.js';
 import { initExport } from './exportui.js';
+import { initProjects } from './projectui.js';
+import { ordered, matchMissing, adopt } from './project.js';
 
 const engine = new Engine();
 const $ = (id) => document.getElementById(id);
@@ -86,10 +88,12 @@ function afterChange() {
 
 // ---------- 불러오기 ----------
 $('load').onclick = () => $('file').click();
-$('file').onchange = async (e) => {
-  const files = [...e.target.files];
-  e.target.value = '';
-  if (!files.length) return;
+$('file').onchange = (e) => { const f = [...e.target.files]; e.target.value = ''; loadFiles(f, false); };
+$('relinkBtn').onclick = () => $('relinkFile').click();
+$('relinkFile').onchange = (e) => { const f = [...e.target.files]; e.target.value = ''; loadFiles(f, true); };
+
+async function loadFiles(files, relink) {
+  if (!files.length || loading) return;
   await cleared;
   await engine.init();
   engine.stop();
@@ -108,17 +112,34 @@ $('file').onchange = async (e) => {
   }
   if (!jobs.length) { flash('불러올 MP3·WAV가 없습니다'); return; }
   jobs.sort((a, b) => a.name.localeCompare(b.name, 'ko', { numeric: true }));
+  // 연결할 때는 빈 자리 이름과 같은 파일을 먼저
+  if (engine.missing.length) {
+    const names = new Set(engine.missing.map((m) => m.name));
+    jobs.sort((a, b) => (names.has(b.name) ? 1 : 0) - (names.has(a.name) ? 1 : 0));
+  }
 
-  const first = !engine.tracks.length;
-  const added = [];
+  const first = !engine.tracks.length && !engine.missing.length;
+  const added = [], linked = [], wrong = [];
   loading = true; engine.loading = true; refreshTabs();
   for (let i = 0; i < jobs.length; i++) {
-    sub(`불러오는 중 ${i + 1}/${jobs.length}: ${jobs[i].name}`);
+    if (relink && !engine.missing.length) break;
+    sub(`${relink ? '연결하는' : '불러오는'} 중 ${i + 1}/${jobs.length}: ${jobs[i].name}`);
     try {
       const t = await engine.addTrack(jobs[i].name, await jobs[i].get());
-      t.color = colorFor(t.name);
+      const m = engine.missing.length ? matchMissing(engine, t) : null;
+      if (m) {
+        adopt(engine, t, m);
+        if (m.row) m.row.remove();
+        linked.push(t);
+      } else if (relink) {
+        wrong.push(jobs[i].name);
+        await engine.removeTrack(t);
+        continue;
+      } else {
+        t.color = colorFor(t.name);
+        added.push(t);
+      }
       renderTrack(t);
-      added.push(t);
       await new Promise((r) => setTimeout(r, 50));   // 다음 파일 전에 메모리 정리할 틈
     } catch (err) {
       flash(err.name === 'QuotaExceededError' ? `폰 저장공간이 부족해 ${jobs[i].name}부터 불러오지 못했습니다` : `${jobs[i].name}: 읽지 못했습니다 (${err.message})`);
@@ -127,19 +148,54 @@ $('file').onchange = async (e) => {
       if (err.name === 'QuotaExceededError') break;
     }
   }
-  loading = false; engine.loading = false; refreshTabs();
-  engine.applyGains();
-  if (first) fitZoom();
+  loading = false; engine.loading = false;
+  engine.tracks.sort((x, y) => (x.slot ?? 1e9) - (y.slot ?? 1e9));   // 저장 때 순서대로 (새 트랙은 뒤로)
+  orderRows();
+  engine.applyAll();
+  if (first || linked.length) fitZoom();
   afterChange();
   renderCompare();
-  // 처음 올릴 때, 또는 원곡이 있는 상태에서 스템을 더 올릴 때 자동으로 믹싱·마스터를 잡는다
+  refreshTabs();
+  paintRelink();
+  if (linked.length || wrong.length) {
+    const left = engine.missing.length;
+    flash(`${linked.length}개 연결` + (wrong.length ? ` · 프로젝트에 없는 음원: ${wrong.join(', ')}` : '') + (left ? ` · 아직 음원 없는 트랙 ${left}개` : ''));
+  }
+  // 처음 올릴 때, 또는 원곡이 있는 상태에서 스템을 더 올릴 때 자동으로 믹싱·마스터를 잡는다 (연결은 저장된 설정 그대로)
   if (added.length && (first || engine.hasRef)) await mix.autoNew(added);
   showStats();
-};
+}
+
+// ---------- 음원 없는 트랙 ----------
+function renderMissing() {
+  for (const m of engine.missing) {
+    if (m.row) continue;
+    const row = document.createElement('div');
+    row.className = 'stick trow';
+    row.innerHTML = `<div class="track miss"><div class="head"><span class="dot"></span><div class="name"></div></div><div class="mbody"><span>음원 없음</span><button><i class="ic ic-link"></i>음원 연결</button></div></div>`;
+    row.querySelector('.name').textContent = m.name + (m.mix && m.mix.ref ? ' (원곡)' : '');
+    row.querySelector('.dot').style.background = m.color || '#7d8794';
+    row.querySelector('button').onclick = () => $('relinkFile').click();
+    m.row = row;
+    tracksEl.appendChild(row);
+  }
+  tracksEl.querySelector('.empty')?.remove();
+  orderRows();
+  layout();
+}
+function orderRows() {
+  for (const x of ordered(engine)) if (x.row) tracksEl.appendChild(x.row);
+}
+function paintRelink() {
+  const n = engine.missing.length;
+  $('relinkBar').hidden = !n;
+  $('relinkText').textContent = `음원이 없는 트랙 ${n}개 · zip이나 파일을 고르면 이름과 길이로 맞춰 연결합니다`;
+  layout();
+}
 
 // ---------- 트랙 카드 ----------
 function renderTrack(t) {
-  if (engine.tracks.length === 1) tracksEl.innerHTML = '';
+  tracksEl.querySelector('.empty')?.remove();
   const row = document.createElement('div');
   row.className = 'stick trow';
   row.innerHTML = `
@@ -499,11 +555,34 @@ const mix = initMix({
   engine, pushUndo, flash, sub,
   setBusy: (b) => { busy = b; if (!b) showStats(); },
   undo: () => $('undo').click(), redo: () => $('redo').click(),
-  onChange: (what) => { if (what === 'stop') updatePlayBtn(); renderCompare(); for (const t of engine.tracks) { updateHead(t); if (t.row) tracksEl.appendChild(t.row); } redraw(); },
+  onChange: (what) => { if (what === 'stop') updatePlayBtn(); renderCompare(); for (const t of engine.tracks) updateHead(t); orderRows(); redraw(); },
 });
 
 // ---------- 내보내기 탭 ----------
 const exp = initExport({ engine, flash, sub, setBusy: (b) => { busy = b; if (!b) showStats(); }, onStop: updatePlayBtn });
+
+// ---------- 프로젝트 ----------
+async function clearAllUI() {
+  await cleared;
+  await engine.init();
+  await engine.clearAll();
+  for (const m of engine.missing) m.row?.remove();
+  tracksEl.innerHTML = '<div class="empty stick">MP3, WAV 또는 압축 파일(zip)을 불러오세요</div>';
+  sel = null; undoStack = []; redoStack = []; updateUndoBtns();
+  mix.select(null);
+  updatePlayBtn(); renderPanel(); renderCompare(); paintRelink(); layout(); refreshTabs();
+  sub('음원을 불러오세요');
+}
+const proj = initProjects({
+  engine, flash,
+  clearAll: clearAllUI,
+  isBusy: () => busy || loading,
+  opened: () => {
+    renderMissing(); paintRelink(); engine.applyAll(); renderCompare(); refreshTabs();
+    flash(`"${engine.projectName}" 열었습니다 · 음원을 연결하세요`);
+  },
+});
+$('proj').onclick = () => proj.open();
 
 // ---------- 아래 재생바와 비교 전환 ----------
 let seekDrag = false;
@@ -566,6 +645,7 @@ for (const b of document.querySelectorAll('nav button')) {
 
 // ---------- 상태 ----------
 function showStats() {
+  if (!engine.tracks.length && engine.missing.length) { if (!loading && !busy) sub(`음원 없는 트랙 ${engine.missing.length}개`); return; }
   if (!engine.tracks.length || loading || busy || flash.t && Date.now() - (flash.at || 0) < 2500) return;
   const under = engine.tracks.reduce((s, t) => s + t.under, 0);
   sub(`${engine.tracks.length}트랙 · 끊김 ${under}회`);

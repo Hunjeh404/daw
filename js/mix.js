@@ -220,6 +220,7 @@ export function initMix({ engine: E, pushUndo, flash, sub, onChange, setBusy, un
           for (const x of E.tracks) x.mix.ref = false;
           E.tracks.splice(E.tracks.indexOf(t), 1);   // 원곡은 트랙 목록 맨 위로
           E.tracks.unshift(t);
+          t.slot = -1;
         }
         m.ref = v; E.ana.refLufs = null; E.ana.procLufs = null;
         if (!E.hasRef && E.mode === 'ref') E.mode = 'apply';

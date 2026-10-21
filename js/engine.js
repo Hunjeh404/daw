@@ -27,6 +27,7 @@ export class Engine {
     this.onEnd = null;
     this.mm = masterDefaults();
     this.mode = 'apply';         // apply | raw | ref
+    this.missing = [];           // 프로젝트에서 열었지만 아직 음원이 없는 트랙
     this.ana = {};               // 자동 분석 결과 (음량 맞춤용)
     this.meter = null;
   }
@@ -113,7 +114,7 @@ export class Engine {
     if (cat === 'drums') toSum.connect(this.M.drumKey);
     if (cat === 'vocal') toSum.connect(this.M.vocalKey);
     const t = {
-      id, name, frames, ch, peaks, scale,
+      id, fileId: id, name, frames, ch, peaks, scale,
       file: await fh.getFile(),
       node, fxc, toSum, refGain, cat, sent: new Set(), mix: trackDefaults(),
       clips: [{ id: newClipId(), start: 0, src: 0, len: frames, fi: 0, fo: 0 }],
@@ -320,6 +321,28 @@ export class Engine {
   async setLoop(on, start, end) {
     this.loop = { on: on && end - start > SR / 10, start, end };
     if (this.playing) await this.seek(this.position);
+  }
+
+  // 트랙 하나 빼기 (연결 끊고 임시 음원 지움)
+  async removeTrack(t) {
+    try { t.node.port.postMessage({ type: 'stop' }); } catch {}
+    for (const n of [t.node, t.fxc.out, t.fxc.send, t.toSum, t.refGain]) { try { n.disconnect(); } catch {} }
+    this.tracks = this.tracks.filter((x) => x !== t);
+    await this.root.removeEntry((t.fileId || t.id) + '.pcm').catch(() => {});
+    this.applyAll();
+  }
+
+  // 모두 비우기 (새 프로젝트, 프로젝트 열기 전)
+  async clearAll() {
+    this.stop();
+    for (const t of [...this.tracks]) await this.removeTrack(t);
+    this.missing = [];
+    this.mm = masterDefaults();
+    this.mode = 'apply';
+    this.ana = {};
+    this.loop = { on: false, start: 0, end: 0 };
+    this.pausedPos = 0;
+    this.applyAll();
   }
 
   async storedBytes() {

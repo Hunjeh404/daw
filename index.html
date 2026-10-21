@@ -31,6 +31,9 @@
   .ic-trash { -webkit-mask-image:url(icons/trash.svg); mask-image:url(icons/trash.svg); }
   .ic-wave-sine { -webkit-mask-image:url(icons/wave-sine.svg); mask-image:url(icons/wave-sine.svg); }
   .ic-zoom-in { -webkit-mask-image:url(icons/zoom-in.svg); mask-image:url(icons/zoom-in.svg); }
+  .ic-device-floppy { -webkit-mask-image:url(icons/device-floppy.svg); mask-image:url(icons/device-floppy.svg); }
+  .ic-x { -webkit-mask-image:url(icons/x.svg); mask-image:url(icons/x.svg); }
+  .ic-link { -webkit-mask-image:url(icons/link.svg); mask-image:url(icons/link.svg); }
   .ic-zoom-out { -webkit-mask-image:url(icons/zoom-out.svg); mask-image:url(icons/zoom-out.svg); }
 
   header { display:flex; align-items:center; gap:10px; padding:10px 12px 6px; }
@@ -151,13 +154,32 @@
   .xbtns { display:flex; flex-wrap:wrap; gap:6px; }
   .xbtns button { height:36px; font-size:13px; padding:0 10px; }
   .xlink { align-self:flex-start; height:32px; font-size:13px; color:var(--dim); }
+
+  header button { padding:0 10px; }
+  #relinkBar { display:flex; align-items:center; gap:8px; margin:0 12px 8px; padding:8px 10px; border:1px dashed var(--accent); border-radius:10px; color:var(--accent); font-size:13px; }
+  #relinkBar[hidden] { display:none; }
+  #relinkBar span { flex:1; }
+  #relinkBar button { height:38px; color:var(--accent); border-color:var(--accent); }
+  .track.miss { border-style:dashed; opacity:.75; }
+  .track.miss .mbody { display:flex; align-items:center; justify-content:space-between; height:52px; margin-top:6px; padding:0 10px; border-radius:6px; background:#181a1f; color:var(--dim); font-size:13px; }
+  .track.miss .mbody button { height:36px; font-size:13px; }
+  #sheet { position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:20; display:flex; align-items:flex-end; }
+  #sheet[hidden] { display:none; }
+  .sheet-box { width:100%; max-height:85dvh; overflow-y:auto; background:var(--bg); border-radius:16px 16px 0 0; padding:8px 12px calc(12px + env(safe-area-inset-bottom)); }
+  .sheet-h { display:flex; align-items:center; justify-content:space-between; padding:4px 2px 8px; }
+  .sheet-h b { font-size:17px; }
+  .sheet-h button { border:none; background:none; }
+  .pitem { border-top:1px solid var(--line); padding:8px 0; display:flex; flex-direction:column; gap:6px; }
+  .pitem.on b { color:var(--accent); }
+  .pname small { display:block; color:var(--dim); font-size:12px; }
   .soon { margin:auto; color:var(--dim); text-align:center; padding:24px; }
 </style>
 </head>
 <body>
 <header>
   <div class="ttl"><h1>DAW <span>4</span> Hoon-jay</h1><div class="sub" id="sub">음원을 불러오세요</div></div>
-  <button id="load"><i class="ic ic-folder-open"></i>불러오기</button>
+  <button id="proj"><i class="ic ic-device-floppy"></i>프로젝트</button>
+  <button id="load"><i class="ic ic-folder-open"></i>음원</button>
 </header>
 
 <section class="tab show" id="tab-edit">
@@ -168,6 +190,7 @@
     <button id="zout" aria-label="축소"><i class="ic ic-zoom-out"></i></button>
     <button id="zin" aria-label="확대"><i class="ic ic-zoom-in"></i></button>
   </div>
+  <div id="relinkBar" hidden><span id="relinkText"></span><button id="relinkBtn"><i class="ic ic-link"></i>음원 연결</button></div>
   <div id="view">
     <div id="content">
       <div id="rulerBox" class="stick"><canvas id="ruler"></canvas></div>
@@ -211,7 +234,10 @@
   <button data-tab="mix"><i class="ic ic-adjustments-horizontal"></i>믹싱</button>
   <button data-tab="export"><i class="ic ic-file-export"></i>내보내기</button>
 </nav>
+<div id="sheet" hidden><div class="sheet-box"><div class="sheet-h"><b>프로젝트</b><button id="sheetClose" aria-label="닫기"><i class="ic ic-x"></i></button></div><div id="sheetBody"></div></div></div>
 <input id="file" type="file" multiple hidden>
+<input id="relinkFile" type="file" multiple hidden>
+<input id="projFile" type="file" hidden>
 <input id="artFile" type="file" accept="image/*" hidden>
 <input id="srtFile" type="file" hidden>
 <script type="module" src="js/app.js"></script>
