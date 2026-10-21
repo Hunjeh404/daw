@@ -78,11 +78,20 @@
   .sw.on { background:var(--accent); }
   .sw.on::after { left:25px; background:var(--ink); }
 
-  #transport { display:flex; align-items:center; gap:10px; padding:8px 12px; border-top:1px solid var(--line); background:var(--bg); }
-  #play { width:60px; height:60px; border-radius:30px; background:var(--accent); color:var(--ink); border:none; }
+  #transport { background:var(--bg); padding:0 12px 8px; }
+  #seekRow { display:flex; align-items:center; gap:8px; height:30px; margin-top:-1px; }
+  #seekRow span { font-size:12px; font-variant-numeric:tabular-nums; color:var(--dim); min-width:44px; }
+  #tCur { color:var(--text) !important; font-weight:600; }
+  #tDur { text-align:right; }
+  #seek { flex:1; height:30px; position:relative; touch-action:none; cursor:pointer; }
+  #seekLine { position:absolute; left:0; right:0; top:13px; height:4px; border-radius:2px; background:var(--line); overflow:hidden; }
+  #seekFill { height:100%; width:0; background:var(--accent); }
+  #seekKnob { position:absolute; top:8px; width:14px; height:14px; margin-left:-7px; border-radius:7px; background:var(--accent); left:0; }
+  #tRow { display:flex; align-items:center; gap:8px; }
+  #play { width:56px; height:56px; border-radius:28px; background:var(--accent); color:var(--ink); border:none; flex:none; }
   #play .ic { width:26px; height:26px; }
-  #time { margin-left:auto; font-variant-numeric:tabular-nums; color:var(--dim); font-size:15px; }
-  #time b { color:var(--text); font-weight:600; }
+  #compare { flex:1; display:flex; min-width:0; }
+  #compare .seg button { height:40px; }
 
   nav { display:grid; grid-template-columns:repeat(3,1fr); border-top:1px solid var(--line); background:var(--panel); padding-bottom:env(safe-area-inset-bottom); }
   nav button { height:58px; border:none; border-radius:0; background:none; flex-direction:column; gap:2px; font-size:12px; color:var(--dim); }
@@ -100,7 +109,6 @@
   .autorow { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:4px 0 10px; }
   .autorow > button { flex:none; }
   .autorow .auto { border-color:var(--accent); color:var(--accent); }
-  .autorow .seg { flex:1 1 150px; }
   .meter { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:10px 12px; display:grid; grid-template-columns:repeat(3,1fr); gap:4px 8px; margin-bottom:10px; }
   .meter .mv span { display:block; color:var(--dim); font-size:12px; }
   .meter .mv b { font-size:17px; font-variant-numeric:tabular-nums; }
@@ -158,10 +166,17 @@
 <section class="tab" id="tab-export"><div class="soon">내보내기 탭은 5단계에서 만듭니다</div></section>
 
 <div id="transport">
-  <button id="loop" aria-label="구간 반복"><i class="ic ic-repeat"></i></button>
-  <button id="home" aria-label="처음으로"><i class="ic ic-player-skip-back"></i></button>
-  <button id="play" aria-label="재생"><i class="ic ic-player-play"></i></button>
-  <div id="time"><b>0:00.0</b> / 0:00</div>
+  <div id="seekRow">
+    <span id="tCur">0:00.0</span>
+    <div id="seek" role="slider" aria-label="재생 위치"><div id="seekLine"><div id="seekFill"></div></div><div id="seekKnob"></div></div>
+    <span id="tDur">0:00</span>
+  </div>
+  <div id="tRow">
+    <button id="loop" aria-label="구간 반복"><i class="ic ic-repeat"></i></button>
+    <button id="home" aria-label="처음으로"><i class="ic ic-player-skip-back"></i></button>
+    <button id="play" aria-label="재생"><i class="ic ic-player-play"></i></button>
+    <div id="compare"></div>
+  </div>
 </div>
 <nav>
   <button data-tab="edit" class="on"><i class="ic ic-wave-sine"></i>편집</button>

@@ -104,12 +104,6 @@ export function initMix({ engine: E, pushUndo, flash, sub, onChange, setBusy, un
       fb.onclick = runFit;
       row.appendChild(fb);
     }
-    const opts = [['raw', '원본'], ['apply', '적용']];
-    if (E.hasRef) opts.push(['ref', '원곡']);
-    row.appendChild(segmented(opts, E.mode, (m) => {
-      E.setMode(m);
-      if (m !== 'apply' && E.ana.procLufs == null) flash('자동 분석 전이라 비교 음량이 맞춰지지 않았습니다');
-    }));
     return row;
   }
 
@@ -192,7 +186,9 @@ export function initMix({ engine: E, pushUndo, flash, sub, onChange, setBusy, un
           E.tracks.splice(E.tracks.indexOf(t), 1);   // 원곡은 트랙 목록 맨 위로
           E.tracks.unshift(t);
         }
-        m.ref = v; E.ana.refLufs = null; E.ana.procLufs = null; changed(); render();
+        m.ref = v; E.ana.refLufs = null; E.ana.procLufs = null;
+        if (!E.hasRef && E.mode === 'ref') E.mode = 'apply';
+        changed(); render();
       }, '원곡으로 쓰기'));
       b.appendChild(r);
     }));

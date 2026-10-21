@@ -1,7 +1,7 @@
 import { Engine, SR, PEAK, newClipId } from './engine.js';
 import { listZip, readEntry } from './zip.js';
 import { colorFor } from './cats.js';
-import { slider, setUndoHook } from './ui.js';
+import { slider, setUndoHook, segmented } from './ui.js';
 import { initMix } from './mix.js';
 
 const engine = new Engine();
@@ -52,7 +52,9 @@ function restore(s) {
     engine.updateSegs(t);
   });
   engine.mm = structuredClone(s.mm);
+  if (!engine.hasRef && engine.mode === 'ref') engine.mode = 'apply';
   engine.applyAll();
+  renderCompare();
   if (document.getElementById('tab-mix').classList.contains('show')) mix.render();
   if (sel) {
     const c = sel.t.clips.find((x) => x.id === sel.c.id);
@@ -125,6 +127,7 @@ $('file').onchange = async (e) => {
   engine.applyGains();
   if (first) fitZoom();
   afterChange();
+  renderCompare();
   showStats();
 };
 
@@ -490,8 +493,50 @@ const mix = initMix({
   engine, pushUndo, flash, sub,
   setBusy: (b) => { busy = b; if (!b) showStats(); },
   undo: () => $('undo').click(), redo: () => $('redo').click(),
-  onChange: (what) => { if (what === 'stop') updatePlayBtn(); for (const t of engine.tracks) { updateHead(t); if (t.row) tracksEl.appendChild(t.row); } redraw(); },
+  onChange: (what) => { if (what === 'stop') updatePlayBtn(); renderCompare(); for (const t of engine.tracks) { updateHead(t); if (t.row) tracksEl.appendChild(t.row); } redraw(); },
 });
+
+// ---------- 아래 재생바와 비교 전환 ----------
+let seekDrag = false;
+function paintSeek(f) {
+  const p = clamp(f, 0, 1) * 100;
+  $('seekFill').style.width = p + '%';
+  $('seekKnob').style.left = p + '%';
+}
+{
+  const bar = $('seek');
+  const at = (e) => { const r = bar.getBoundingClientRect(); return clamp((e.clientX - r.left) / r.width, 0, 1); };
+  bar.addEventListener('pointerdown', (e) => {
+    if (!engine.tracks.length) return;
+    seekDrag = true; bar.setPointerCapture(e.pointerId);
+    const f = at(e); paintSeek(f); $('tCur').textContent = fmt(f * engine.duration, true);
+  });
+  bar.addEventListener('pointermove', (e) => {
+    if (!seekDrag) return;
+    const f = at(e); paintSeek(f); $('tCur').textContent = fmt(f * engine.duration, true);
+  });
+  const end = async (e, cancel) => {
+    if (!seekDrag) return;
+    const f = at(e);
+    if (!cancel) await engine.seek(Math.round(f * engine.duration));
+    seekDrag = false;
+    redraw();
+  };
+  bar.addEventListener('pointerup', (e) => end(e, false));
+  bar.addEventListener('pointercancel', (e) => end(e, true));
+}
+
+function renderCompare() {
+  const box = $('compare');
+  box.innerHTML = '';
+  if (!engine.tracks.length) return;
+  const opts = [['raw', '원본'], ['apply', '적용']];
+  if (engine.hasRef) opts.push(['ref', '원곡']);
+  box.appendChild(segmented(opts, engine.mode, (m) => {
+    engine.setMode(m);
+    if (m !== 'apply' && engine.ana.procLufs == null) flash('마스터 자동 분석 전이라 비교 음량이 맞춰지지 않았습니다');
+  }));
+}
 
 // ---------- 탭 ----------
 for (const b of document.querySelectorAll('nav button')) {
@@ -514,7 +559,9 @@ setInterval(showStats, 2000);
 (function loop() {
   if (engine.ctx) {
     const pos = engine.position;
-    $('time').innerHTML = `<b>${fmt(pos, true)}</b> / ${fmt(engine.duration)}`;
+    const dur = engine.duration;
+    if (!seekDrag) { $('tCur').textContent = fmt(pos, true); paintSeek(dur ? pos / dur : 0); }
+    $('tDur').textContent = fmt(dur);
     if (engine.playing) {
       // 사용자가 직접 넘겨 보는 중이 아니면 재생 위치를 따라감
       const x = frameToX(pos);
