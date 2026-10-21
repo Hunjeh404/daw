@@ -111,7 +111,7 @@ $('file').onchange = async (e) => {
 
   const first = !engine.tracks.length;
   const added = [];
-  loading = true;
+  loading = true; engine.loading = true; refreshTabs();
   for (let i = 0; i < jobs.length; i++) {
     sub(`불러오는 중 ${i + 1}/${jobs.length}: ${jobs[i].name}`);
     try {
@@ -119,6 +119,7 @@ $('file').onchange = async (e) => {
       t.color = colorFor(t.name);
       renderTrack(t);
       added.push(t);
+      await new Promise((r) => setTimeout(r, 50));   // 다음 파일 전에 메모리 정리할 틈
     } catch (err) {
       flash(err.name === 'QuotaExceededError' ? `폰 저장공간이 부족해 ${jobs[i].name}부터 불러오지 못했습니다` : `${jobs[i].name}: 읽지 못했습니다 (${err.message})`);
       console.error(jobs[i].name, err);
@@ -126,7 +127,7 @@ $('file').onchange = async (e) => {
       if (err.name === 'QuotaExceededError') break;
     }
   }
-  loading = false;
+  loading = false; engine.loading = false; refreshTabs();
   engine.applyGains();
   if (first) fitZoom();
   afterChange();
@@ -547,6 +548,12 @@ function renderCompare() {
 }
 
 // ---------- 탭 ----------
+// 불러오는 동안에는 믹싱·내보내기 탭이 아무 작업도 시작하지 않게 안내만 보인다
+function refreshTabs() {
+  const on = document.querySelector('nav button.on')?.dataset.tab;
+  if (on === 'mix') mix.render();
+  if (on === 'export') exp.render();
+}
 for (const b of document.querySelectorAll('nav button')) {
   b.onclick = () => {
     for (const x of document.querySelectorAll('nav button')) x.classList.toggle('on', x === b);

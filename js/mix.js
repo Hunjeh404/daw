@@ -309,6 +309,7 @@ export function initMix({ engine: E, pushUndo, flash, sub, onChange, setBusy, un
   }
 
   function render() {
+    if (E.loading) { renderTop(); body.innerHTML = '<div class="soon">음원을 불러오는 중입니다. 다 불러온 뒤에 열립니다</div>'; return; }
     renderTop();
     const y = body.scrollTop;
     body.innerHTML = '';

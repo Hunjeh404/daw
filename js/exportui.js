@@ -26,6 +26,7 @@ export function initExport({ engine: E, flash, sub, setBusy, onStop }) {
   }
 
   function render() {
+    if (E.loading) { foot.hidden = true; body.innerHTML = '<div class="soon">음원을 불러오는 중입니다. 다 불러온 뒤에 열립니다</div>'; return; }
     const y = body.scrollTop;
     body.innerHTML = '';
     if (!E.tracks.length) { body.innerHTML = '<div class="soon">먼저 편집 탭에서 음원을 불러오세요</div>'; foot.hidden = true; return; }
