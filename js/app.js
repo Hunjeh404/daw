@@ -255,6 +255,40 @@ function zoom(f) {
   view.scrollLeft = center * pps - laneW / 2;
   redraw();
 }
+// 두 손가락으로 벌리고 모으기: 손가락 사이 지점을 기준으로 확대·축소
+let pinching = false;
+{
+  let p0 = null;
+  const two = (e) => {
+    const [a, b] = e.touches;
+    const rl = ruler.getBoundingClientRect().left;
+    return { d: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY), cx: (a.clientX + b.clientX) / 2 - rl };
+  };
+  view.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 2) return;
+    pinching = true;
+    const t = two(e);
+    p0 = { d: Math.max(t.d, 10), pps, sec: (view.scrollLeft + t.cx) / pps };
+  }, { passive: true });
+  view.addEventListener('touchmove', (e) => {
+    if (!p0 || e.touches.length !== 2) return;
+    if (e.cancelable) e.preventDefault();
+    const t = two(e);
+    const minPps = laneW / Math.max(engine.duration / SR, 1);
+    pps = clamp(p0.pps * (t.d / p0.d), minPps, 400);
+    layout();
+    view.scrollLeft = p0.sec * pps - t.cx;
+    lastUserScroll = performance.now();
+    redraw();
+  }, { passive: false });
+  const end = (e) => {
+    if (e.touches.length >= 2) return;
+    p0 = null;
+    if (pinching && !e.touches.length) setTimeout(() => { pinching = false; }, 0);
+  };
+  view.addEventListener('touchend', end);
+  view.addEventListener('touchcancel', end);
+}
 $('zin').onclick = () => zoom(1.6);
 $('zout').onclick = () => zoom(1 / 1.6);
 view.addEventListener('scroll', () => { if (progScroll) progScroll = false; else lastUserScroll = performance.now(); redraw(); }, { passive: true });
@@ -392,6 +426,7 @@ function bindLane(t) {
   });
   lane.addEventListener('pointermove', (e) => {
     if (!st) return;
+    if (pinching) { st.pinched = true; return; }
     const dx = e.clientX - st.x0;
     if (Math.abs(dx) > 8 || Math.abs(e.clientY - st.y0) > 8) st.moved = true;
     if (st.drag) {
@@ -415,6 +450,12 @@ function bindLane(t) {
   const end = (e, cancel) => {
     if (!st) return;
     const s = st; st = null;
+    if (s.pinched || pinching) {
+      // 확대·축소하던 손가락이면 고르기·이동은 하지 않는다
+      s.drop?.row.classList.remove('drop');
+      if (s.drag) { sel.c.start = s.drag.orig; undoStack.pop(); updateUndoBtns(); redraw(); }
+      return;
+    }
     if (s.drag) {
       const to = cancel ? null : s.drop;
       to?.row.classList.remove('drop');

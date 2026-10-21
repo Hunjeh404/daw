@@ -17,6 +17,7 @@ export function initExport({ engine: E, flash, sub, setBusy, onStop }) {
   let busy = false;
   let active = false;          // 내보내기 탭이 열려 있는지 (열려 있으면 재생에 구간·페이드·포함 트랙 반영)
   let wave = null;             // 구간 파형 { cv, env, draw }
+  let zv = null;               // 파형 보기 범위 { v0, v1 } (초) — 두 손가락으로 확대·축소
 
   const live = () => E.tracks.filter((t) => !t.mix.ref);
   const included = () => live().filter((t) => !st.off.has(t.id));
@@ -165,34 +166,44 @@ export function initExport({ engine: E, flash, sub, setBusy, onStop }) {
     const cv = document.createElement('canvas');
     cv.className = 'xwave';
     const H = 96;
-    let env = null, W = 0;
+    let env = null, W = 0, envKey = '', norm = 0;
+    if (!zv || zv.dur !== dur) zv = { v0: 0, v1: dur, dur };
     const d = () => window.devicePixelRatio || 1;
-    const fx = (sec) => (sec / dur) * W;
-    function build() {
-      W = cv.clientWidth;
-      if (!W) return;
-      cv.width = Math.round(W * d()); cv.height = Math.round(H * d());
-      env = new Float32Array(W);
-      const fpp = (dur * SR) / W;    // 한 칸이 맡는 프레임
+    const span = () => zv.v1 - zv.v0;
+    const fx = (sec) => ((sec - zv.v0) / span()) * W;
+    const xs = (x) => zv.v0 + (x / W) * span();
+    // 보기 범위 [v0, v1)의 칸별 크기
+    function envelope(v0, v1, W) {
+      const out = new Float32Array(W);
+      const fpp = ((v1 - v0) * SR) / W, base = v0 * SR;   // 한 칸이 맡는 프레임
       for (const t of included()) {
         const g = dbToLin(t.volumeDb);
         for (const c of t.clips) {
           const src = E.sources.get(c.sid);
           if (!src || src.missing) continue;
           const pk = src.peaks, sc = src.scale * g;
-          const x0 = Math.max(0, Math.floor(c.start / fpp)), x1 = Math.min(W, Math.ceil((c.start + c.len) / fpp));
+          const x0 = Math.max(0, Math.floor((c.start - base) / fpp)), x1 = Math.min(W, Math.ceil((c.start + c.len - base) / fpp));
           for (let x = x0; x < x1; x++) {
-            const f0 = Math.max(0, x * fpp - c.start), f1 = Math.min(c.len, (x + 1) * fpp - c.start);
+            const f0 = Math.max(0, base + x * fpp - c.start), f1 = Math.min(c.len, base + (x + 1) * fpp - c.start);
             if (f1 <= f0) continue;
             let m = 0;
             for (let k = Math.floor((c.src + f0) / PEAK), e = Math.floor((c.src + f1) / PEAK); k <= e && k < pk.length; k++) if (pk[k] > m) m = pk[k];
-            env[x] += m * sc;
+            out[x] += m * sc;
           }
         }
       }
-      let mx = 0;
-      for (const v of env) if (v > mx) mx = v;
-      if (mx > 0) for (let i = 0; i < W; i++) env[i] /= mx;
+      return out;
+    }
+    function build() {
+      W = cv.clientWidth;
+      if (!W) return;
+      const key = `${W}|${zv.v0}|${zv.v1}`;
+      if (key === envKey && env) return;
+      cv.width = Math.round(W * d()); cv.height = Math.round(H * d());
+      if (!norm) { for (const v of envelope(0, dur, W)) if (v > norm) norm = v; norm = norm || 1; }   // 곡 전체 기준 크기
+      env = envelope(zv.v0, zv.v1, W);
+      for (let i = 0; i < W; i++) env[i] = Math.min(1, env[i] / norm);
+      envKey = key;
     }
     function gainAt(sec) {
       let v = 1;
@@ -203,7 +214,7 @@ export function initExport({ engine: E, flash, sub, setBusy, onStop }) {
     }
     function draw() {
       if (!cv.isConnected) return;
-      if (!env || cv.clientWidth !== W) build();
+      build();
       if (!env) return;
       const g = cv.getContext('2d');
       g.setTransform(d(), 0, 0, d(), 0, 0);
@@ -212,7 +223,7 @@ export function initExport({ engine: E, flash, sub, setBusy, onStop }) {
       const xa = fx(st.a), xb = fx(st.b);
       for (let x = 0; x < W; x++) {
         const y = Math.max(0.5, env[x] * amp);
-        const sec = ((x + 0.5) / W) * dur;
+        const sec = xs(x + 0.5);
         const k = gainAt(sec);
         g.fillStyle = 'rgba(138,143,153,.28)';
         g.fillRect(x, mid - y, 1, y * 2);
@@ -236,24 +247,56 @@ export function initExport({ engine: E, flash, sub, setBusy, onStop }) {
       // 재생 위치
       const px = fx(E.position / SR);
       g.fillStyle = '#ffffff'; g.fillRect(px - 1, 0, 2, H);
+      // 확대 중이면 맨 아래에 곡 전체 중 어디를 보고 있는지
+      if (span() < dur - 0.01) {
+        g.fillStyle = 'rgba(232,233,236,.18)'; g.fillRect(0, H - 3, W, 3);
+        g.fillStyle = 'rgba(232,233,236,.7)'; g.fillRect((zv.v0 / dur) * W, H - 3, Math.max(4, (span() / dur) * W), 3);
+      }
     }
-    // 끌기
-    let drag = null;
+    // 끌기: 손잡이는 옮기고, 빈 곳을 끌면 옆으로 넘기고, 두 손가락이면 확대·축소, 누르기만 하면 그 위치로
+    let drag = null, pinch = null;
+    const pts = new Map();
     const pt = (e) => { const r = cv.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+    const setView = (v0, sp) => {
+      sp = Math.max(Math.min(2, dur), Math.min(dur, sp));
+      v0 = Math.max(0, Math.min(dur - sp, v0));
+      zv = { v0, v1: v0 + sp, dur };
+    };
+    const pinchInfo = () => { const [a, b] = [...pts.values()]; return { d: Math.max(10, Math.abs(a[0] - b[0])), cx: (a[0] + b[0]) / 2 }; };
     cv.addEventListener('pointerdown', (e) => {
+      cv.setPointerCapture(e.pointerId);
+      pts.set(e.pointerId, pt(e));
+      if (pts.size === 2) {
+        drag = null;
+        const p = pinchInfo();
+        pinch = { d: p.d, span: span(), sec: xs(p.cx) };
+        return;
+      }
+      if (pts.size > 2 || pinch) return;
       const [x, y] = pt(e);
       const hs = [['a', fx(st.a), H - 9], ['b', fx(st.b), H - 9], ['fi', fx(st.a + st.fi), 9], ['fo', fx(st.b - st.fo), 9]];
       let best = null, bd = 30;
       for (const h of hs) { const dd = Math.hypot(x - h[1], (y - h[2]) * 0.6); if (dd < bd) { bd = dd; best = h[0]; } }
-      drag = { key: best, x0: x, moved: false };
-      cv.setPointerCapture(e.pointerId);
+      drag = { key: best, x0: x, v0: zv.v0, moved: false, changed: false };
     });
     cv.addEventListener('pointermove', (e) => {
+      if (!pts.has(e.pointerId)) return;
+      pts.set(e.pointerId, pt(e));
+      if (pinch) {
+        if (pts.size < 2) return;
+        const p = pinchInfo();
+        const sp = pinch.span * (pinch.d / p.d);
+        const spc = Math.max(Math.min(2, dur), Math.min(dur, sp));
+        setView(pinch.sec - (p.cx / W) * spc, spc);
+        draw();
+        return;
+      }
       if (!drag) return;
       const [x] = pt(e);
       if (Math.abs(x - drag.x0) > 4) drag.moved = true;
-      if (!drag.key || !drag.moved) return;
-      const sec = Math.max(0, Math.min(dur, (x / W) * dur));
+      if (!drag.moved) return;
+      if (!drag.key) { setView(drag.v0 - ((x - drag.x0) / W) * span(), span()); draw(); return; }
+      const sec = Math.max(0, Math.min(dur, xs(x)));
       const r1 = (v) => Math.round(v * 10) / 10;
       if (drag.key === 'a') st.a = r1(Math.min(sec, st.b - 1));
       if (drag.key === 'b') st.b = r1(Math.max(sec, st.a + 1));
@@ -261,14 +304,18 @@ export function initExport({ engine: E, flash, sub, setBusy, onStop }) {
       if (drag.key === 'fo') st.fo = r1(Math.max(0, Math.min(st.b - sec, 20)));
       const room = st.b - st.a;
       if (st.fi + st.fo > room) { if (drag.key === 'fo') st.fo = r1(room - st.fi); else st.fi = r1(Math.max(0, room - st.fo)); }
+      drag.changed = true;
       paintSum(); draw();
     });
     const end = (e, cancel) => {
+      if (!pts.has(e.pointerId)) return;
+      pts.delete(e.pointerId);
+      if (pinch) { if (!pts.size) pinch = null; return; }
       if (!drag) return;
       const dd = drag; drag = null;
       if (cancel) return;
-      if (dd.key && dd.moved) { render(); return; }
-      if (!dd.moved) { const [x] = pt(e); E.seek(Math.round(Math.max(0, Math.min(dur, (x / W) * dur)) * SR)); }
+      if (dd.key && dd.changed) { render(); return; }
+      if (!dd.moved) { const [x] = pt(e); E.seek(Math.round(Math.max(0, Math.min(dur, xs(x))) * SR)); }
     };
     cv.addEventListener('pointerup', (e) => end(e, false));
     cv.addEventListener('pointercancel', (e) => end(e, true));
