@@ -107,13 +107,19 @@ async function loadFiles(files, relink) {
     if (/\.zip$/i.test(f.name)) {
       try {
         const entries = await listZip(f);
-        for (const en of entries) if (isAudio(en.name)) jobs.push({ name: baseName(en.name), get: () => readEntry(f, en) });
+        for (const en of entries) if (isAudio(en.name)) jobs.push({ name: baseName(en.name), wav: /\.wav$/i.test(en.name), get: () => readEntry(f, en) });
       } catch (err) { flash(f.name + ': ' + err.message); return; }
     } else if (isAudio(f.name)) {
-      jobs.push({ name: baseName(f.name), get: () => f.arrayBuffer() });
+      jobs.push({ name: baseName(f.name), wav: /\.wav$/i.test(f.name), get: () => f.arrayBuffer() });
     }
   }
   if (!jobs.length) { flash('불러올 MP3·WAV가 없습니다'); return; }
+  // 같은 이름이 여러 번 들어 있으면 (zip 안에 WAV·MP3가 함께 있거나 폴더가 겹칠 때) 하나만, WAV를 먼저
+  {
+    const pick = new Map();
+    for (const j of jobs) { const o = pick.get(j.name); if (!o || (j.wav && !o.wav)) pick.set(j.name, j); }
+    jobs.splice(0, jobs.length, ...pick.values());
+  }
   jobs.sort((a, b) => a.name.localeCompare(b.name, 'ko', { numeric: true }));
   // 연결할 때는 빈 자리 이름과 같은 파일을 먼저
   const holes0 = engine.missingSources;
