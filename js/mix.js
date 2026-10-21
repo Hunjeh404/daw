@@ -187,7 +187,11 @@ export function initMix({ engine: E, pushUndo, flash, sub, onChange, setBusy, un
       r.className = 'row';
       r.innerHTML = `<span class="grow">원곡(기준)으로 쓰기<small>믹스에서 빼고 비교용으로만 들립니다</small></span>`;
       r.appendChild(toggle(m.ref, (v) => {
-        if (v) for (const x of E.tracks) x.mix.ref = false;
+        if (v) {
+          for (const x of E.tracks) x.mix.ref = false;
+          E.tracks.splice(E.tracks.indexOf(t), 1);   // 원곡은 트랙 목록 맨 위로
+          E.tracks.unshift(t);
+        }
         m.ref = v; E.ana.refLufs = null; E.ana.procLufs = null; changed(); render();
       }, '원곡으로 쓰기'));
       b.appendChild(r);

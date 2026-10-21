@@ -40,13 +40,14 @@ const redraw = () => { dirty = true; };
 // ---------- 되돌리기 ----------
 function snapshot() {
   return {
-    tracks: engine.tracks.map((t) => ({ clips: t.clips.map((c) => ({ ...c })), xfade: t.xfade, volumeDb: t.volumeDb, muted: t.muted, solo: t.solo, mix: structuredClone(t.mix) })),
+    tracks: engine.tracks.map((t) => ({ id: t.id, clips: t.clips.map((c) => ({ ...c })), xfade: t.xfade, volumeDb: t.volumeDb, muted: t.muted, solo: t.solo, mix: structuredClone(t.mix) })),
     mm: structuredClone(engine.mm),
   };
 }
 function restore(s) {
-  engine.tracks.forEach((t, i) => {
-    const x = s.tracks[i];
+  engine.tracks.forEach((t) => {
+    const x = s.tracks.find((y) => y.id === t.id);
+    if (!x) return;
     Object.assign(t, { clips: x.clips.map((c) => ({ ...c })), xfade: x.xfade, volumeDb: x.volumeDb, muted: x.muted, solo: x.solo, mix: structuredClone(x.mix) });
     engine.updateSegs(t);
   });
@@ -489,7 +490,7 @@ const mix = initMix({
   engine, pushUndo, flash, sub,
   setBusy: (b) => { busy = b; if (!b) showStats(); },
   undo: () => $('undo').click(), redo: () => $('redo').click(),
-  onChange: (what) => { if (what === 'stop') updatePlayBtn(); for (const t of engine.tracks) updateHead(t); redraw(); },
+  onChange: (what) => { if (what === 'stop') updatePlayBtn(); for (const t of engine.tracks) { updateHead(t); if (t.row) tracksEl.appendChild(t.row); } redraw(); },
 });
 
 // ---------- 탭 ----------
