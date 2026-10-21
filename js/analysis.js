@@ -53,7 +53,7 @@ export function measureTracks(E, onProgress) {
 
 // 원곡 기준 볼륨: 스템 합이 원곡의 대역별·시간별 크기에 가장 가까워지는 값. 가운데 값이 0dB이 되게 옮긴다.
 // 반환: 원곡에서 거의 들리지 않는다고 나온 트랙 이름들
-export function fitVolumes(E) {
+export function fitVolumes(E, only) {
   const live = E.tracks.filter((t) => !t.mix.ref && t.ana && t.ana.fit != null);
   if (!live.length) return null;
   const db = live.map((t) => (t.ana.fit > 1e-6 ? 10 * Math.log10(t.ana.fit) : -Infinity));
@@ -61,6 +61,7 @@ export function fitVolumes(E) {
   const mid = fin.length ? fin[Math.floor(fin.length / 2)] : 0;
   const quiet = [];
   live.forEach((t, i) => {
+    if (only && t !== only) return;
     const v = db[i] - mid;
     if (!isFinite(v) || v < -24) quiet.push(t.name);
     t.volumeDb = half(clamp(isFinite(v) ? v : -24, -24, 12));
@@ -77,7 +78,7 @@ export function suggestTrack(E, t) {
   // 볼륨: 다른 트랙들로 추정한 보컬 기준 음량에 맞추되 절반만, ±4dB 안에서 (원래 밸런스를 크게 해치지 않게)
   const implied = E.tracks.filter((x) => !x.mix.ref && x.ana && isFinite(x.ana.lufs)).map((x) => x.ana.lufs - (CAT[x.cat] || CAT.other).off).sort((p, q) => p - q);
   const refV = implied[Math.floor(implied.length / 2)];
-  if (a.fit != null) fitVolumes(E);   // 원곡이 있으면 원곡 속 크기를 따른다
+  if (a.fit != null) fitVolumes(E, t);   // 원곡이 있으면 원곡 속 크기를 따른다 (이 트랙만)
   else t.volumeDb = half(clamp((refV + c.off - a.lufs) * 0.5, -4, 4));
   m.low = { on: c.hp > 0, hz: c.hp || 80 };
   const b = a.bands;
