@@ -424,11 +424,12 @@ export class Engine {
   }
 
   // 트랙 하나 빼기 (연결 끊고, 아무 트랙도 안 쓰는 음원은 지움)
-  async removeTrack(t) {
+  // keep: 음원은 남긴다 (되돌리기·붙여넣기에서 아직 쓸 수 있으므로)
+  async removeTrack(t, keep) {
     try { t.node.port.postMessage({ type: 'stop' }); } catch {}
     for (const n of [t.node, t.fxc.out, t.fxc.send, t.toSum, t.refGain]) { try { n.disconnect(); } catch {} }
     this.tracks = this.tracks.filter((x) => x !== t);
-    await this.pruneSources();
+    if (!keep) await this.pruneSources();
     this.applyAll();
   }
   async pruneSources() {

@@ -2,6 +2,8 @@
 import { renderRange } from './render.js';
 import { Stats, integrate } from './stats.js';
 import { Loudness } from './dsp.js';
+import { ToneSpec, toneCurve } from './tone.js';
+import { readWindow } from './pcm.js';
 
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const half = (v) => Math.round(v * 2) / 2;
@@ -188,7 +190,10 @@ export async function autoMaster(E, onProgress) {
   mm.tamer = { on: true, mid: 0.2, air: 0.3 };
   mm.glue = { on: true, amt: 0.3 };
   mm.eq = { on: false, low: 0, mid: 0, high: 0 };
+  mm.tone = { amt: 0.7, ...mm.tone, on: false };
   mm.lim = { ...mm.lim, on: true, gainDb: 0 };
+  const refT = E.tracks.find((t) => t.mix.ref);
+  const spec = refT ? new ToneSpec() : null;
 
   const PASSES = 4;
   const measure = async (pass) => {
@@ -198,7 +203,9 @@ export async function autoMaster(E, onProgress) {
       const a = Math.max(0, starts[k]), b = Math.min(dur, a + SL);
       const L = new Loudness(SR);
       s.restart();
-      await renderRange(E, a, b, (l, r) => { s.push(l, r, 1); for (let i = 0; i < l.length; i++) L.push(l[i], r[i]); }, { mm, pre: SR });
+      const sp = pass === 0 ? spec : null;
+      sp && sp.restart();
+      await renderRange(E, a, b, (l, r) => { s.push(l, r, 1); sp && sp.push(l, r); for (let i = 0; i < l.length; i++) L.push(l[i], r[i]); }, { mm, pre: SR });
       blocks.push(...L.blocks);
       onProgress && onProgress((pass * starts.length + k + 1) / (PASSES * starts.length));
     }
@@ -208,10 +215,22 @@ export async function autoMaster(E, onProgress) {
   };
   // 1차: 처리 결과의 음색과 음량을 보고 마스터 EQ와 입력 음량을 정한다
   const r1 = await measure(0);
-  const bb = r1.bands;
-  const lowG = half(clamp((2 - (bb.low - bb.mid)) * 0.3, -2, 2));
-  const highG = half(clamp((-3 - (bb.pres - bb.mid)) * 0.3, -2, 2));
-  mm.eq = { on: Math.abs(lowG) >= 0.5 || Math.abs(highG) >= 0.5, low: lowG, mid: 0, high: highG };
+  if (refT) {
+    // 원곡이 있으면: 같은 자리의 원곡과 미드·사이드 음색을 비교해 맞춘다 (톤 EQ는 끔)
+    const rs = new ToneSpec();
+    for (const st of starts) {
+      const a = Math.max(0, st), b = Math.min(dur, a + SL);
+      rs.restart();
+      const [l, r] = await readWindow(E.srcView(refT), a, b);
+      rs.push(l, r);
+    }
+    mm.tone = { ...mm.tone, on: true, ...toneCurve(spec.bands(), rs.bands(), mm.spread !== 'orig') };
+  } else {
+    const bb = r1.bands;
+    const lowG = half(clamp((2 - (bb.low - bb.mid)) * 0.3, -2, 2));
+    const highG = half(clamp((-3 - (bb.pres - bb.mid)) * 0.3, -2, 2));
+    mm.eq = { on: Math.abs(lowG) >= 0.5 || Math.abs(highG) >= 0.5, low: lowG, mid: 0, high: highG };
+  }
   // 이후: 리미터 때문에 입력을 바꾼 만큼 결과가 바뀌지 않으므로, 두 측정 사이 기울기로 다음 값을 정한다
   let gPrev = 0, rPrev = r1.lufs, r = r1;
   mm.lim.gainDb = +clamp(mm.lim.target - r1.lufs, -20, 24).toFixed(1);

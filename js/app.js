@@ -574,6 +574,24 @@ $('addTrack').onclick = async () => {
   t.row.scrollIntoView({ block: 'nearest' });
   refreshTabs();
 };
+$('aDelTrack').onclick = async () => {
+  const t = curT;
+  if (!t || loading || busy) return;
+  if (!confirm(`"${t.name}" 트랙을 지울까요? 되돌릴 수 없습니다.`)) return;
+  const wasRef = t.mix.ref;
+  engine.stop(); updatePlayBtn();
+  await engine.removeTrack(t, true);
+  t.row.remove();
+  engine.exp?.off.delete(t.id);
+  if (sel && sel.t === t) sel = null;
+  curT = null;
+  if (wasRef && engine.mode === 'ref') engine.mode = 'apply';
+  if (!engine.tracks.length) tracksEl.innerHTML = '<div class="empty stick">MP3, WAV 또는 압축 파일(zip)을 불러오세요</div>';
+  mix.select(null);
+  engine.applyAll();
+  afterChange(); renderCompare(); paintRelink(); refreshTabs();
+  flash(`"${t.name}" 트랙을 지웠습니다`);
+};
 $('aFade').onclick = () => { fadeOpen = !fadeOpen; renderPanel(); layout(); };
 $('aMove').onclick = () => {
   moveMode = !moveMode;

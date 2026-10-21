@@ -2,6 +2,7 @@
 import { slider, toggle, section, segmented } from './ui.js';
 import { Biquad } from './dsp.js';
 import { EQF } from './mixgraph.js';
+import { TONE_F } from './tone.js';
 import { measureTracks, suggestTrack, autoMaster, fitVolumes, applySpread } from './analysis.js';
 
 const SR = 44100;
@@ -69,6 +70,27 @@ export function initMix({ engine: E, pushUndo, flash, sub, onChange, setBusy, un
       }
       paintCurve();
     });
+  }
+
+  // 원곡 음색 맞추기 곡선: 미드(주황)·사이드(회색), 세기 반영
+  function drawTone(cv, T) {
+    const d = window.devicePixelRatio || 1;
+    const w = cv.clientWidth, h = cv.clientHeight;
+    if (!w) return;
+    cv.width = Math.round(w * d); cv.height = Math.round(h * d);
+    const g = cv.getContext('2d');
+    g.setTransform(d, 0, 0, d, 0, 0);
+    g.clearRect(0, 0, w, h);
+    const fx = (f) => Math.log(f / 20) / Math.log(1000) * w;
+    const y = (db) => h / 2 - db / 12 * (h / 2 - 4);
+    g.strokeStyle = '#2c3038'; g.lineWidth = 1; g.fillStyle = '#8a8f99'; g.font = '10px system-ui, sans-serif';
+    for (const f of [100, 1000, 10000]) { const x = Math.round(fx(f)) + 0.5; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke(); g.fillText(f >= 1000 ? f / 1000 + 'k' : f, x + 3, h - 4); }
+    for (const db of [-6, 0, 6]) { const yy = Math.round(y(db)) + 0.5; g.beginPath(); g.moveTo(0, yy); g.lineTo(w, yy); g.stroke(); }
+    for (const [arr, col] of [[T.side, '#8a8f99'], [T.mid, '#e9a23b']]) {
+      g.strokeStyle = col; g.lineWidth = 2; g.beginPath();
+      arr.forEach((v, i) => { const x = fx(TONE_F[i]), yy = y(Math.max(-12, Math.min(12, v * T.amt))); i ? g.lineTo(x, yy) : g.moveTo(x, yy); });
+      g.stroke();
+    }
   }
 
   // ---------- 상단 ----------
@@ -274,6 +296,19 @@ export function initMix({ engine: E, pushUndo, flash, sub, onChange, setBusy, un
     meterEls = { target: card.querySelector('#mTarget'), int: card.querySelector('#mInt'), tp: card.querySelector('#mTp'), bars: card.querySelector('#mBars'), l: -90, r: -90 };
     meterEls.target.textContent = `${mm.lim.target} LUFS`;
     body.appendChild(eqSection('m-eq', mm.low, mm.eq));
+    if (mm.tone && mm.tone.mid) {
+      const T = mm.tone;
+      const cv = document.createElement('canvas');
+      cv.className = 'curve';
+      const paint = () => requestAnimationFrame(() => drawTone(cv, T));
+      new ResizeObserver(paint).observe(cv);
+      body.appendChild(section('m-tone', '원곡 음색 맞추기', { get: () => T.on, set: (v) => { T.on = v; changed(); } }, (b) => {
+        b.appendChild(cv);
+        b.appendChild(slider({ label: '세기', min: 0, max: 1, step: 0.05, unit: '%', get: () => T.amt, show: pct, set: (v) => { T.amt = v; changed(); paint(); } }));
+        b.appendChild(note('원곡과 같은 자리를 비교해 가운데(주황)와 양옆(회색) 소리의 음색을 따로 맞춥니다. 100%로 올리면 거칠어질 수 있습니다'));
+        paint();
+      }));
+    }
     body.appendChild(section('m-space', '공간·스테레오', { get: () => mm.space.on, set: (v) => { mm.space.on = v; changed(); } }, (b) => {
       b.appendChild(slider({ label: '스테레오 폭', min: 0, max: 1.5, step: 0.05, unit: '%', get: () => mm.space.width, show: pct, set: (v) => { mm.space.width = v; changed(); } }));
       b.appendChild(slider({ label: '저역 모노', min: 0, max: 200, step: 10, unit: 'Hz', get: () => mm.space.monoHz, show: (v) => (v ? v.toFixed(0) : '끔'), set: (v) => { mm.space.monoHz = v; changed(); } }));

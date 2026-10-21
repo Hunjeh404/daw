@@ -1,5 +1,6 @@
 // 트랙·마스터 처리 연결. 실시간 재생과 파일 만들기(오프라인)가 같은 구성을 쓴다.
 import { dbToLin } from './dsp.js';
+import { toneFir } from './tone.js';
 
 export const trackDefaults = () => ({
   ref: false,
@@ -15,6 +16,7 @@ export const trackDefaults = () => ({
 export const masterDefaults = () => ({
   low: { on: true, hz: 30 },
   eq: { on: false, low: 0, mid: 0, high: 0 },
+  tone: { on: false, amt: 0.7, mid: null, side: null },   // 원곡 음색 맞추기 곡선 (dB, TONE_F 지점마다)
   space: { on: true, width: 1, monoHz: 120 },
   spread: 'some',         // 넓이: orig | some | wide
   tamer: { on: false, mid: 0, air: 0 },
@@ -96,7 +98,28 @@ export function buildMaster(ctx, dest, mm) {
   const hs = biquad(ctx, 'highshelf', EQF.high, 0.7);
   const mfx = new AudioWorkletNode(ctx, 'master-fx', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2], processorOptions: { p: mm ? masterFxParams(mm, false) : undefined } });
   const match = ctx.createGain();
-  sum.connect(hp).connect(ls).connect(pk).connect(hs).connect(mfx).connect(match).connect(dest);
+  sum.connect(hp).connect(ls).connect(pk).connect(hs);
+  // 원곡 음색 맞추기: 미드·사이드로 나눠 각각 FIR을 거친 뒤 다시 좌우로. 꺼져 있으면 dry로만
+  const mono = (g = 1) => { const n = ctx.createGain(); n.gain.value = g; n.channelCount = 1; n.channelCountMode = 'explicit'; return n; };
+  const split = ctx.createChannelSplitter(2);
+  const mIn = mono(), sIn = mono(), rNeg = mono(-1);
+  hs.connect(split);
+  split.connect(mIn, 0); split.connect(mIn, 1);
+  split.connect(sIn, 0); split.connect(rNeg, 1); rNeg.connect(sIn);
+  mIn.gain.value = 0.5; sIn.gain.value = 0.5;
+  const mkConv = () => { const c = ctx.createConvolver(); c.normalize = false; c.channelCount = 1; c.channelCountMode = 'explicit'; return c; };
+  const cM = mkConv(), cS = mkConv();
+  mIn.connect(cM); sIn.connect(cS);
+  const outL = mono(), outR = mono(), sNeg = mono(-1);
+  cM.connect(outL); cS.connect(outL);
+  cM.connect(outR); cS.connect(sNeg).connect(outR);
+  const merge = ctx.createChannelMerger(2);
+  outL.connect(merge, 0, 0); outR.connect(merge, 0, 1);
+  const toneWet = ctx.createGain(), toneDry = ctx.createGain();
+  toneWet.gain.value = 0;
+  merge.connect(toneWet).connect(mfx);
+  hs.connect(toneDry).connect(mfx);
+  mfx.connect(match).connect(dest);
   // 공용 리버브: 저역·고역을 잘라 넣고, 보컬이 나올 때 살짝 누를 수 있게 track-fx를 하나 거친다
   const vin = ctx.createGain();
   const vhp = biquad(ctx, 'highpass', 300, 0.707);
@@ -109,7 +132,7 @@ export function buildMaster(ctx, dest, mm) {
   const vocalKey = ctx.createGain();
   vocalKey.connect(vduck, 0, 1);
   const drumKey = ctx.createGain();
-  return { sum, hp, ls, pk, hs, mfx, match, vin, conv, vduck, vret, vocalKey, drumKey, verbSize: 0 };
+  return { sum, hp, ls, pk, hs, mfx, match, vin, conv, vduck, vret, vocalKey, drumKey, verbSize: 0, cM, cS, toneWet, toneDry, toneKey: '' };
 }
 
 export function makeIR(ctx, seconds) {
@@ -144,4 +167,16 @@ export function applyMaster(M, mm, raw, ctx, matchDb, now) {
   if (M.verbSize !== mm.verb.size) { M.verbSize = mm.verb.size; M.conv.buffer = makeIR(ctx, mm.verb.size); }
   set(M.vret.gain, on && mm.verb.on !== false ? dbToLin(mm.verb.ret) : 0);
   set(M.match.gain, isFinite(matchDb) ? 1 : 0);   // 원곡 비교 때는 믹스를 끈다
+  const T = mm.tone || {};
+  const toneOn = on && T.on && T.mid && T.side;
+  if (toneOn) {
+    const key = `${T.amt}|${T.mid}|${T.side}`;
+    if (M.toneKey !== key) {
+      M.toneKey = key;
+      const buf = (c) => { const h = toneFir(c, T.amt); const b = ctx.createBuffer(1, h.length, ctx.sampleRate); b.copyToChannel(h, 0); return b; };
+      M.cM.buffer = buf(T.mid); M.cS.buffer = buf(T.side);
+    }
+  }
+  set(M.toneWet.gain, toneOn ? 1 : 0);
+  set(M.toneDry.gain, toneOn ? 0 : 1);
 }

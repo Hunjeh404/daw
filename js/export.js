@@ -7,7 +7,7 @@ const safe = (s) => (s || '').replace(/[\\/:*?"<>|]/g, '_').trim();
 // 트랙별 파일용 마스터: 마스터 처리는 빼고 입력 음량과 공용 리버브만 남김
 function stemMaster(mm) {
   const m = structuredClone(mm);
-  m.low.on = false; m.eq.on = false; m.space.on = false; m.tamer.on = false; m.glue.on = false;
+  m.low.on = false; m.eq.on = false; if (m.tone) m.tone.on = false; m.space.on = false; m.tamer.on = false; m.glue.on = false;
   m.lim = { ...m.lim, on: false, gainOnly: true };
   return m;
 }
