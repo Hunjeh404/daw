@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>DAW 4 Hoon-jay</title>
+<style>
+  :root { --bg:#14161a; --panel:#1d2026; --line:#2c3038; --text:#e8e9ec; --dim:#8a8f99; --accent:#e9a23b; --wave:#5f8fbf; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.4 system-ui, -apple-system, "Noto Sans KR", sans-serif; }
+  header { padding:14px 16px 8px; display:flex; align-items:baseline; gap:8px; }
+  header h1 { margin:0; font-size:17px; font-weight:700; letter-spacing:.02em; }
+  header span { color:var(--accent); }
+  .bar { position:sticky; top:0; z-index:2; background:var(--bg); padding:8px 16px 10px; border-bottom:1px solid var(--line); }
+  .row { display:flex; align-items:center; gap:8px; }
+  button { background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:10px; height:42px; min-width:42px; padding:0 12px; font-size:15px; display:inline-flex; align-items:center; justify-content:center; gap:6px; }
+  button:active { background:#262a31; }
+  button.play { background:var(--accent); color:#14161a; border-color:var(--accent); min-width:56px; }
+  .ic { display:inline-block; width:20px; height:20px; background:currentColor; -webkit-mask:center/contain no-repeat; mask:center/contain no-repeat; }
+  .ic-player-play { -webkit-mask-image:url(icons/player-play.svg); mask-image:url(icons/player-play.svg); }
+  .ic-player-pause { -webkit-mask-image:url(icons/player-pause.svg); mask-image:url(icons/player-pause.svg); }
+  .ic-player-skip-back { -webkit-mask-image:url(icons/player-skip-back.svg); mask-image:url(icons/player-skip-back.svg); }
+  .ic-folder-open { -webkit-mask-image:url(icons/folder-open.svg); mask-image:url(icons/folder-open.svg); }
+  .ic-volume { -webkit-mask-image:url(icons/volume.svg); mask-image:url(icons/volume.svg); }
+  .ic-volume-off { -webkit-mask-image:url(icons/volume-off.svg); mask-image:url(icons/volume-off.svg); }
+  #time { margin-left:auto; font-variant-numeric:tabular-nums; color:var(--dim); }
+  #time b { color:var(--text); font-weight:600; }
+  #seek { width:100%; margin:10px 0 0; accent-color:var(--accent); }
+  #status { padding:8px 16px; color:var(--dim); font-size:13px; min-height:20px; }
+  .track { margin:0 16px 10px; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:8px 10px 10px; }
+  .track.muted .wave { opacity:.35; }
+  .track .head { display:flex; align-items:center; gap:8px; }
+  .track .name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:14px; }
+  .track button { height:34px; min-width:34px; padding:0 8px; border-radius:8px; }
+  .track button.on { color:var(--accent); border-color:var(--accent); }
+  .track input[type=range] { width:96px; accent-color:var(--accent); }
+  .wavebox { position:relative; margin-top:6px; height:44px; }
+  .wave { width:100%; height:44px; display:block; }
+  .ph { position:absolute; top:0; bottom:0; width:2px; background:var(--accent); left:0; pointer-events:none; }
+  .empty { margin:40px 16px; text-align:center; color:var(--dim); }
+</style>
+</head>
+<body>
+<header><h1>DAW <span>4</span> Hoon-jay</h1></header>
+<div class="bar">
+  <div class="row">
+    <button id="load"><i class="ic ic-folder-open"></i>불러오기</button>
+    <button id="home" aria-label="처음으로"><i class="ic ic-player-skip-back"></i></button>
+    <button id="play" class="play" aria-label="재생"><i class="ic ic-player-play"></i></button>
+    <div id="time"><b>0:00</b> / 0:00</div>
+  </div>
+  <input id="seek" type="range" min="0" max="0" step="1" value="0">
+</div>
+<div id="status"></div>
+<div id="tracks"><div class="empty">MP3, WAV 또는 압축 파일(zip)을 불러오세요</div></div>
+<input id="file" type="file" accept=".mp3,.wav,.zip,audio/mpeg,audio/wav,application/zip" multiple hidden>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
