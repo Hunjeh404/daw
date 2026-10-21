@@ -1,12 +1,12 @@
 // 트랙 하나를 재생하는 프로세서. 메인 스레드가 보내 준 원본 블록(Int16)과
 // 재생 구간 목록(segments)만 들고, 구간마다 페이드를 곱해 더한다.
 const BLOCK = 32768;
+const KEY = 65536;   // 블록 이름: 음원 번호 * KEY + 블록 번호
 const HALF_PI = Math.PI / 2;
 
 class TrackPlayer extends AudioWorkletProcessor {
   constructor(opts) {
     super();
-    this.ch = opts.processorOptions.channels;
     this.blocks = new Map();
     this.segs = [];
     this.loop = null;
@@ -37,7 +37,6 @@ class TrackPlayer extends AudioWorkletProcessor {
     const Lo = out[0], Ro = out[1];
     if (!this.playing) return true;
     const n = Lo.length;
-    const ch = this.ch;
     const rel0 = currentFrame - this.startCtx;
     let missing = false;
     for (let i = 0; i < n; i++) {
@@ -49,17 +48,19 @@ class TrackPlayer extends AudioWorkletProcessor {
           if (pos < s.start || pos >= s.end) continue;
           const src = s.src + (pos - s.start);
           const b = (src / BLOCK) | 0;
-          const data = this.blocks.get(b);
+          const data = this.blocks.get(s.idx * KEY + b);
           if (!data) { missing = true; continue; }
           let g = 1;
           const d = pos - s.start;
           if (d < s.fi) g *= Math.sin(HALF_PI * d / s.fi);
           const e = s.end - pos;
           if (e < s.fo) g *= Math.sin(HALF_PI * e / s.fo);
+          const ch = s.ch;
           const k = (src - b * BLOCK) * ch;
-          const vl = data[k] / 32768;
+          g *= s.k / 32768;          // 음원마다 0dB 넘는 부분을 보존하려고 줄여 담은 배율을 되돌림
+          const vl = data[k];
           l += vl * g;
-          r += (ch === 2 ? data[k + 1] / 32768 : vl) * g;
+          r += (ch === 2 ? data[k + 1] : vl) * g;
         }
       }
       Lo[i] = l; Ro[i] = r;

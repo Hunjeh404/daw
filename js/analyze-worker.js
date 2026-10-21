@@ -51,9 +51,9 @@ onmessage = async (e) => {
     for (let k = 0; k < tracks.length; k++) {
       const t = tracks[k];
       const [L, R] = await readWindow(t, w0, w1);
-      per[k].push(L, R, t.scale);
-      if (t.ref) ref.push(L, R, t.scale);
-      else if (t.live) for (let i = 0; i < L.length; i++) { sumL[i] += L[i] * t.scale; sumR[i] += R[i] * t.scale; }
+      per[k].push(L, R, 1);
+      if (t.ref) ref.push(L, R, 1);
+      else if (t.live) for (let i = 0; i < L.length; i++) { sumL[i] += L[i]; sumR[i] += R[i]; }
       win.push(doFit && (t.ref || t.live) ? [L, R] : null);
     }
     raw.push(sumL, sumR, 1);
@@ -61,11 +61,11 @@ onmessage = async (e) => {
       for (let p = 0; p + N <= w1 - w0; p += FHOP) {
         const f = new Float64Array(NB * (fitIdx.length + 1));
         const [rL, rR] = win[refIdx];
-        bandsAt(rL, rR, p, tracks[refIdx].scale, re, im, f, 0);
+        bandsAt(rL, rR, p, 1, re, im, f, 0);
         let e = 0;
         for (let k = 0; k < NB; k++) e += f[k];
         if (e < 1e-6) continue;   // 원곡이 조용한 곳은 건너뜀
-        fitIdx.forEach((ti, j) => { const [L, R] = win[ti]; bandsAt(L, R, p, tracks[ti].scale, re, im, f, NB * (j + 1)); });
+        fitIdx.forEach((ti, j) => { const [L, R] = win[ti]; bandsAt(L, R, p, 1, re, im, f, NB * (j + 1)); });
         frames.push(f);
       }
     }

@@ -5,7 +5,7 @@ import { slider, setUndoHook, segmented } from './ui.js';
 import { initMix } from './mix.js';
 import { initExport } from './exportui.js';
 import { initProjects } from './projectui.js';
-import { ordered, matchMissing, adopt } from './project.js';
+import { matchSource } from './project.js';
 
 const engine = new Engine();
 const $ = (id) => document.getElementById(id);
@@ -17,6 +17,8 @@ let busy = false;              // 자동 분석 중
 let pps = 20;                 // 1초당 픽셀
 let laneW = 300;              // 파형 칸 너비(CSS px)
 let sel = null;               // { t, c }
+let curT = null;              // 고른 트랙 (붙여넣기 대상)
+let clipBoard = null;         // 복사한 클립 { sid, src, len, fi, fo }
 let moveMode = false;
 let fadeOpen = false;
 let undoStack = [], redoStack = [];
@@ -50,8 +52,8 @@ function snapshot() {
 function restore(s) {
   engine.tracks.forEach((t) => {
     const x = s.tracks.find((y) => y.id === t.id);
-    if (!x) return;
-    Object.assign(t, { clips: x.clips.map((c) => ({ ...c })), xfade: x.xfade, volumeDb: x.volumeDb, muted: x.muted, solo: x.solo, mix: structuredClone(x.mix) });
+    if (!x) { t.clips = []; engine.updateSegs(t); return; }   // 그 뒤에 만든 빈 트랙
+    Object.assign(t,{ clips: x.clips.map((c) => ({ ...c })), xfade: x.xfade, volumeDb: x.volumeDb, muted: x.muted, solo: x.solo, mix: structuredClone(x.mix) });
     engine.updateSegs(t);
   });
   engine.mm = structuredClone(s.mm);
@@ -60,8 +62,9 @@ function restore(s) {
   renderCompare();
   if (document.getElementById('tab-mix').classList.contains('show')) mix.render();
   if (sel) {
-    const c = sel.t.clips.find((x) => x.id === sel.c.id);
-    sel = c ? { t: sel.t, c } : null;
+    const id = sel.c.id;
+    sel = null;
+    for (const t of engine.tracks) { const c = t.clips.find((x) => x.id === id); if (c) { sel = { t, c }; curT = t; } }
   }
   afterChange();
 }
@@ -113,33 +116,37 @@ async function loadFiles(files, relink) {
   if (!jobs.length) { flash('불러올 MP3·WAV가 없습니다'); return; }
   jobs.sort((a, b) => a.name.localeCompare(b.name, 'ko', { numeric: true }));
   // 연결할 때는 빈 자리 이름과 같은 파일을 먼저
-  if (engine.missing.length) {
-    const names = new Set(engine.missing.map((m) => m.name));
+  const holes0 = engine.missingSources;
+  if (holes0.length) {
+    const names = new Set(holes0.map((m) => m.name));
     jobs.sort((a, b) => (names.has(b.name) ? 1 : 0) - (names.has(a.name) ? 1 : 0));
   }
 
-  const first = !engine.tracks.length && !engine.missing.length;
-  const added = [], linked = [], wrong = [];
+  const first = !engine.tracks.length;
+  const added = [], wrong = [];
+  let linked = 0;
   loading = true; engine.loading = true; refreshTabs();
   for (let i = 0; i < jobs.length; i++) {
-    if (relink && !engine.missing.length) break;
+    if (relink && !engine.missingSources.length) break;
     sub(`${relink ? '연결하는' : '불러오는'} 중 ${i + 1}/${jobs.length}: ${jobs[i].name}`);
     try {
-      const t = await engine.addTrack(jobs[i].name, await jobs[i].get());
-      const m = engine.missing.length ? matchMissing(engine, t) : null;
-      if (m) {
-        adopt(engine, t, m);
-        if (m.row) m.row.remove();
-        linked.push(t);
+      const src = await engine.addSource(jobs[i].name, await jobs[i].get());
+      const hole = matchSource(engine, src);
+      if (hole) {
+        engine.fillSource(hole, src);
+        linked++;
       } else if (relink) {
         wrong.push(jobs[i].name);
-        await engine.removeTrack(t);
-        continue;
+        await engine.removeSource(src);
       } else {
+        const t = engine.makeTrack(src.name);
+        t.home = src.sid;
+        t.clips = [{ id: newClipId(), sid: src.sid, start: 0, src: 0, len: src.frames, fi: 0, fo: 0 }];
         t.color = colorFor(t.name);
+        engine.updateSegs(t);
+        renderTrack(t);
         added.push(t);
       }
-      renderTrack(t);
       await new Promise((r) => setTimeout(r, 50));   // 다음 파일 전에 메모리 정리할 틈
     } catch (err) {
       flash(err.name === 'QuotaExceededError' ? `폰 저장공간이 부족해 ${jobs[i].name}부터 불러오지 못했습니다` : `${jobs[i].name}: 읽지 못했습니다 (${err.message})`);
@@ -149,47 +156,29 @@ async function loadFiles(files, relink) {
     }
   }
   loading = false; engine.loading = false;
-  engine.tracks.sort((x, y) => (x.slot ?? 1e9) - (y.slot ?? 1e9));   // 저장 때 순서대로 (새 트랙은 뒤로)
   orderRows();
   engine.applyAll();
-  if (first || linked.length) fitZoom();
+  if (first || linked) fitZoom();
   afterChange();
   renderCompare();
   refreshTabs();
   paintRelink();
-  if (linked.length || wrong.length) {
-    const left = engine.missing.length;
-    flash(`${linked.length}개 연결` + (wrong.length ? ` · 프로젝트에 없는 음원: ${wrong.join(', ')}` : '') + (left ? ` · 아직 음원 없는 트랙 ${left}개` : ''));
+  if (linked || wrong.length) {
+    const left = engine.missingSources.length;
+    flash(`음원 ${linked}개 연결` + (wrong.length ? ` · 프로젝트에 없는 음원: ${wrong.join(', ')}` : '') + (left ? ` · 아직 연결 안 된 음원 ${left}개` : ''));
   }
   // 처음 올릴 때, 또는 원곡이 있는 상태에서 스템을 더 올릴 때 자동으로 믹싱·마스터를 잡는다 (연결은 저장된 설정 그대로)
   if (added.length && (first || engine.hasRef)) await mix.autoNew(added);
   showStats();
 }
 
-// ---------- 음원 없는 트랙 ----------
-function renderMissing() {
-  for (const m of engine.missing) {
-    if (m.row) continue;
-    const row = document.createElement('div');
-    row.className = 'stick trow';
-    row.innerHTML = `<div class="track miss"><div class="head"><span class="dot"></span><div class="name"></div></div><div class="mbody"><span>음원 없음</span><button><i class="ic ic-link"></i>음원 연결</button></div></div>`;
-    row.querySelector('.name').textContent = m.name + (m.mix && m.mix.ref ? ' (원곡)' : '');
-    row.querySelector('.dot').style.background = m.color || '#7d8794';
-    row.querySelector('button').onclick = () => $('relinkFile').click();
-    m.row = row;
-    tracksEl.appendChild(row);
-  }
-  tracksEl.querySelector('.empty')?.remove();
-  orderRows();
-  layout();
-}
 function orderRows() {
-  for (const x of ordered(engine)) if (x.row) tracksEl.appendChild(x.row);
+  for (const t of engine.tracks) if (t.row) tracksEl.appendChild(t.row);
 }
 function paintRelink() {
-  const n = engine.missing.length;
+  const n = engine.missingSources.length;
   $('relinkBar').hidden = !n;
-  $('relinkText').textContent = `음원이 없는 트랙 ${n}개 · zip이나 파일을 고르면 이름과 길이로 맞춰 연결합니다`;
+  $('relinkText').textContent = `연결 안 된 음원 ${n}개 · zip이나 파일을 고르면 이름과 길이로 맞춰 연결합니다`;
   layout();
 }
 
@@ -224,6 +213,7 @@ function updateHead(t) {
   t.row.querySelector('.name').textContent = t.name + (t.mix.ref ? ' (원곡)' : '');
   t.row.querySelector('.m').classList.toggle('on', t.muted);
   t.row.querySelector('.s').classList.toggle('on', t.solo);
+  t.row.classList.toggle('cur', t === curT);
 }
 
 // ---------- 배치·확대 ----------
@@ -315,6 +305,18 @@ function drawLane(t) {
     const x0 = (cl.start / SR) * pps - sl, x1 = ((cl.start + cl.len) / SR) * pps - sl;
     if (x1 < 0 || x0 > cw) continue;
     const isSel = sel && sel.c === cl;
+    const srcObj = engine.sources.get(cl.sid);
+    if (!srcObj || srcObj.missing) {
+      // 음원이 아직 없는 조각
+      g.fillStyle = 'rgba(138,143,153,.12)';
+      g.fillRect(x0, 1, x1 - x0, ch - 2);
+      g.strokeStyle = isSel ? '#e9a23b' : 'rgba(138,143,153,.6)';
+      g.setLineDash([4, 4]); g.lineWidth = isSel ? 2 : 1; g.strokeRect(x0 + 1, 1, x1 - x0 - 2, ch - 2); g.setLineDash([]);
+      g.fillStyle = '#8a8f99'; g.font = '12px system-ui, sans-serif'; g.textBaseline = 'middle';
+      g.fillText('음원 없음', Math.max(x0, 0) + 8, ch / 2);
+      continue;
+    }
+    const pk = srcObj.peaks, sc = srcObj.scale;
     g.fillStyle = hexA(t.color, dim ? 0.06 : 0.16);
     g.fillRect(x0, 1, x1 - x0, ch - 2);
     g.fillStyle = dim ? hexA(t.color, 0.35) : t.color;
@@ -325,12 +327,12 @@ function drawLane(t) {
       if (f1 <= 0 || f0 >= cl.len) continue;
       const p0 = Math.floor((cl.src + Math.max(0, f0)) / PEAK), p1 = Math.floor((cl.src + Math.min(cl.len, f1)) / PEAK);
       let m = 0;
-      for (let k = p0; k <= p1 && k < t.peaks.length; k++) if (t.peaks[k] > m) m = t.peaks[k];
+      for (let k = p0; k <= p1 && k < pk.length; k++) if (pk[k] > m) m = pk[k];
       const fm = (f0 + f1) / 2;
       let env = 1;
       if (cl.fi > 0 && fm < cl.fi) env *= Math.sin((Math.PI / 2) * Math.max(0, fm) / cl.fi);
       if (cl.fo > 0 && cl.len - fm < cl.fo) env *= Math.sin((Math.PI / 2) * Math.max(0, cl.len - fm) / cl.fo);
-      const y = Math.max(0.5, Math.min(1, m * t.scale) * env * amp);
+      const y = Math.max(0.5, Math.min(1, m * sc) * env * amp);
       g.fillRect(x, mid - y, 1, y * 2);
     }
     // 페이드 선
@@ -388,6 +390,17 @@ function bindLane(t) {
     if (Math.abs(dx) > 8 || Math.abs(e.clientY - st.y0) > 8) st.moved = true;
     if (st.drag) {
       sel.c.start = Math.max(0, Math.round(st.drag.orig + (dx / pps) * SR));
+      // 위아래로 끌면 다른 트랙에 놓을 수 있다. 화면 끝 가까이면 위아래로 넘긴다
+      const vr = view.getBoundingClientRect(), top = $('rulerBox').getBoundingClientRect().bottom;
+      if (e.clientY < top + 20) view.scrollTop -= 12;
+      else if (e.clientY > vr.bottom - 40) view.scrollTop += 12;
+      const row = document.elementFromPoint(e.clientX, e.clientY)?.closest('.trow');
+      const to = engine.tracks.find((x) => x.row === row && x !== t) || null;
+      if (st.drop !== to) {
+        st.drop?.row.classList.remove('drop');
+        to?.row.classList.add('drop');
+        st.drop = to;
+      }
       redraw();
     } else if (st.scroll !== undefined && Math.abs(dx) > 4) {
       view.scrollLeft = st.scroll - dx;
@@ -397,13 +410,24 @@ function bindLane(t) {
     if (!st) return;
     const s = st; st = null;
     if (s.drag) {
-      if (sel.c.start === s.drag.orig) undoStack.pop(), updateUndoBtns();
+      const to = cancel ? null : s.drop;
+      to?.row.classList.remove('drop');
+      if (to) {
+        const c = sel.c;
+        t.clips = t.clips.filter((x) => x !== c);
+        to.clips.push(c);
+        engine.updateSegs(to);
+        sel = { t: to, c }; curT = to;
+      }
+      if (!to && sel.c.start === s.drag.orig) undoStack.pop(), updateUndoBtns();
       else { engine.updateSegs(t); afterChange(); }
       return;
     }
     if (cancel || s.moved) return;
     const hit = clipAt(t, s.f);
     sel = hit ? { t, c: hit } : null;
+    curT = t;
+    for (const x of engine.tracks) updateHead(x);
     engine.seek(clamp(s.f, 0, engine.duration));
     renderPanel();
     redraw();
@@ -449,9 +473,21 @@ function bindLane(t) {
 // ---------- 편집 패널 ----------
 function renderPanel() {
   const p = $('panel');
-  if (!sel || !engine.tracks.includes(sel.t) || !sel.t.clips.includes(sel.c)) { sel = null; p.hidden = true; return; }
+  if (sel && (!engine.tracks.includes(sel.t) || !sel.t.clips.includes(sel.c))) sel = null;
+  if (curT && !engine.tracks.includes(curT)) curT = null;
+  if (!curT) { p.hidden = true; return; }
   p.hidden = false;
-  const { t, c } = sel;
+  const t = curT, c = sel && sel.t === t ? sel.c : null;
+  for (const id of ['aCut', 'aCutX', 'aCopy', 'aDel', 'aFade']) $(id).disabled = !c;
+  $('aPaste').disabled = !clipBoard;
+  if (!c) {
+    $('pTitle').textContent = `${t.name} · 클립 없음`;
+    $('aMove').classList.toggle('on', moveMode);
+    $('xfade').classList.toggle('on', t.xfade);
+    $('fadeBox').hidden = true;
+    renderVol(t);
+    return;
+  }
   const idx = [...t.clips].sort((a, b) => a.start - b.start).indexOf(c);
   $('pTitle').textContent = `${t.name} · 클립 ${idx + 1}`;
   $('aFade').classList.toggle('on', fadeOpen);
@@ -469,6 +505,9 @@ function renderPanel() {
     });
     fb.append(mk('페이드 인', 'fi'), mk('페이드 아웃', 'fo'));
   }
+  renderVol(t);
+}
+function renderVol(t) {
   const vb = $('volBox');
   vb.innerHTML = '';
   vb.append(slider({
@@ -492,7 +531,7 @@ $('aCut').onclick = () => {
   if (p <= c.start + SR / 100 || p >= c.start + c.len - SR / 100) { flash('재생 위치를 클립 안에 두고 자르세요'); return; }
   pushUndo();
   const left = p - c.start;
-  const c2 = { id: newClipId(), start: p, src: c.src + left, len: c.len - left, fi: 0, fo: c.fo };
+  const c2 = { id: newClipId(), sid: c.sid, start: p, src: c.src + left, len: c.len - left, fi: 0, fo: c.fo };
   c.len = left; c.fo = 0;
   if (c.fi > c.len) c.fi = c.len;
   if (c2.fo > c2.len) c2.fo = c2.len;
@@ -501,14 +540,39 @@ $('aCut').onclick = () => {
   sel = { t, c: c2 };
   afterChange();
 };
-$('aDel').onclick = () => {
-  if (!sel) return;
-  pushUndo();
+function delSel() {
   const { t, c } = sel;
   t.clips = t.clips.filter((x) => x !== c);
   sel = null;
   engine.updateSegs(t);
   afterChange();
+}
+const copySel = () => { const c = sel.c; clipBoard = { sid: c.sid, src: c.src, len: c.len, fi: c.fi, fo: c.fo }; };
+$('aDel').onclick = () => { if (!sel) return; pushUndo(); delSel(); };
+$('aCopy').onclick = () => { if (!sel) return; copySel(); renderPanel(); flash('복사했습니다 · 트랙을 고르고 재생 위치에 붙여넣으세요'); };
+$('aCutX').onclick = () => { if (!sel) return; copySel(); pushUndo(); delSel(); flash('잘라냈습니다 · 트랙을 고르고 재생 위치에 붙여넣으세요'); };
+$('aPaste').onclick = () => {
+  if (!clipBoard || !curT) return;
+  if (!engine.sources.has(clipBoard.sid)) { flash('복사한 음원이 더는 없습니다'); clipBoard = null; renderPanel(); return; }
+  pushUndo();
+  const c = { id: newClipId(), ...clipBoard, start: engine.position };
+  curT.clips.push(c);
+  engine.updateSegs(curT);
+  sel = { t: curT, c };
+  afterChange();
+};
+$('addTrack').onclick = async () => {
+  if (loading) return;
+  await cleared;
+  await engine.init();
+  let n = 1;
+  while (engine.tracks.some((x) => x.name === `새 트랙 ${n}`)) n++;
+  const t = engine.addEmptyTrack(`새 트랙 ${n}`);
+  renderTrack(t);
+  curT = t; sel = null;
+  afterChange();
+  t.row.scrollIntoView({ block: 'nearest' });
+  refreshTabs();
 };
 $('aFade').onclick = () => { fadeOpen = !fadeOpen; renderPanel(); layout(); };
 $('aMove').onclick = () => {
@@ -517,10 +581,10 @@ $('aMove').onclick = () => {
   renderPanel();
 };
 $('xfade').onclick = () => {
-  if (!sel) return;
+  if (!curT) return;
   pushUndo();
-  sel.t.xfade = !sel.t.xfade;
-  engine.updateSegs(sel.t);
+  curT.xfade = !curT.xfade;
+  engine.updateSegs(curT);
   renderPanel();
 };
 
@@ -566,9 +630,8 @@ async function clearAllUI() {
   await cleared;
   await engine.init();
   await engine.clearAll();
-  for (const m of engine.missing) m.row?.remove();
   tracksEl.innerHTML = '<div class="empty stick">MP3, WAV 또는 압축 파일(zip)을 불러오세요</div>';
-  sel = null; undoStack = []; redoStack = []; updateUndoBtns();
+  sel = null; curT = null; clipBoard = null; undoStack = []; redoStack = []; updateUndoBtns();
   mix.select(null);
   updatePlayBtn(); renderPanel(); renderCompare(); paintRelink(); layout(); refreshTabs();
   sub('음원을 불러오세요');
@@ -578,7 +641,8 @@ const proj = initProjects({
   clearAll: clearAllUI,
   isBusy: () => busy || loading,
   opened: () => {
-    renderMissing(); paintRelink(); engine.applyAll(); renderCompare(); refreshTabs();
+    for (const t of engine.tracks) { if (!t.color) t.color = colorFor(t.name); renderTrack(t); }
+    orderRows(); fitZoom(); afterChange(); paintRelink(); renderCompare(); refreshTabs();
     flash(`"${engine.projectName}" 열었습니다 · 음원을 연결하세요`);
   },
 });
@@ -645,7 +709,6 @@ for (const b of document.querySelectorAll('nav button')) {
 
 // ---------- 상태 ----------
 function showStats() {
-  if (!engine.tracks.length && engine.missing.length) { if (!loading && !busy) sub(`음원 없는 트랙 ${engine.missing.length}개`); return; }
   if (!engine.tracks.length || loading || busy || flash.t && Date.now() - (flash.at || 0) < 2500) return;
   const under = engine.tracks.reduce((s, t) => s + t.under, 0);
   sub(`${engine.tracks.length}트랙 · 끊김 ${under}회`);

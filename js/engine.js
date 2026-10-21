@@ -1,6 +1,7 @@
 // 재생 엔진: 음원을 한 곡씩 풀어 폰 저장공간(OPFS)에 16비트로 담고,
 // 재생 위치 앞쪽에 필요한 원본 블록만 조금씩 읽어 트랙별 프로세서로 보낸다.
-// 편집은 원본을 건드리지 않고 클립(원본의 어디를 타임라인 어디에 놓을지)만 바꾼다.
+// 편집은 원본을 건드리지 않고 클립(어느 음원의 어디를 타임라인 어디에 놓을지)만 바꾼다.
+// 음원(sources)과 트랙은 따로다. 트랙은 여러 음원의 조각을 담을 수 있고, 빈 트랙도 있다.
 
 import { buildTrackChain, applyTrack, buildMaster, applyMaster, trackDefaults, masterDefaults } from './mixgraph.js';
 import { category } from './cats.js';
@@ -11,6 +12,7 @@ export const BLOCK = 32768;      // 프레임 (약 0.74초)
 export const PEAK = 1024;        // 파형 한 칸이 맡는 프레임 수
 const AHEAD = 10 * SR;           // 약 10초 앞까지 미리 보냄
 const TINY = 64;                 // 잘린 자리 딸깍 소리 방지용 짧은 페이드
+const KEY = 65536;               // 블록 이름: 음원 번호 * KEY + 블록 번호
 
 let clipSeq = 0;
 export const newClipId = () => 'c' + (++clipSeq);
@@ -27,7 +29,9 @@ export class Engine {
     this.onEnd = null;
     this.mm = masterDefaults();
     this.mode = 'apply';         // apply | raw | ref
-    this.missing = [];           // 프로젝트에서 열었지만 아직 음원이 없는 트랙
+    this.sources = new Map();    // sid → { sid, idx, name, file, frames, ch, scale, peaks, missing }
+    this.srcIdx = new Map();     // idx → source
+    this.nextIdx = 1;
     this.ana = {};               // 자동 분석 결과 (음량 맞춤용)
     this.meter = null;
   }
@@ -72,7 +76,8 @@ export class Engine {
     return d;
   }
 
-  async addTrack(name, arrayBuffer) {
+  // 음원 하나를 풀어 저장 (트랙은 만들지 않음)
+  async addSource(name, arrayBuffer) {
     const buf = await this.ctx.decodeAudioData(arrayBuffer);
     const ch = Math.min(buf.numberOfChannels, 2);
     const frames = buf.length;
@@ -82,8 +87,8 @@ export class Engine {
       for (let i = 0; i < frames; i++) { const a = d[i] < 0 ? -d[i] : d[i]; if (a > peak) peak = a; }
     }
     const scale = peak > 1 ? peak : 1;
-    const id = crypto.randomUUID();
-    const fh = await this.root.getFileHandle(id + '.pcm', { create: true });
+    const sid = crypto.randomUUID();
+    const fh = await this.root.getFileHandle(sid + '.pcm', { create: true });
     const peaks = new Float32Array(Math.ceil(frames / PEAK));
     let w;
     try {
@@ -91,17 +96,43 @@ export class Engine {
       await this.writePcm(w, buf, ch, frames, peaks, scale);
     } catch (err) {
       try { await w?.abort(); } catch {}
-      await this.root.removeEntry(id + '.pcm').catch(() => {});
+      await this.root.removeEntry(sid + '.pcm').catch(() => {});
       throw err;
     }
+    const src = { sid, idx: this.nextIdx++, name, frames, ch, scale, peaks, file: await fh.getFile(), fileId: sid, missing: false };
+    this.sources.set(sid, src);
+    this.srcIdx.set(src.idx, src);
+    return src;
+  }
 
-    const node = new AudioWorkletNode(this.ctx, 'track-player', {
-      numberOfInputs: 0,
-      outputChannelCount: [2],
-      processorOptions: { channels: ch },
-    });
+  // 아직 음원이 없는 자리 (프로젝트에서 열었을 때)
+  addMissingSource(info) {
+    const src = { sid: info.sid, idx: this.nextIdx++, name: info.name, frames: info.frames, ch: info.ch, scale: info.scale || 1, peaks: null, file: null, missing: true };
+    this.sources.set(src.sid, src);
+    this.srcIdx.set(src.idx, src);
+    return src;
+  }
+
+  // 빈 자리에 새로 푼 음원을 채운다 (새 음원 항목은 없앰)
+  fillSource(hole, src) {
+    Object.assign(hole, { file: src.file, peaks: src.peaks, scale: src.scale, fileId: src.fileId, missing: false });
+    this.sources.delete(src.sid);
+    this.srcIdx.delete(src.idx);
+    for (const t of this.tracks) if (t.clips.some((c) => c.sid === hole.sid)) this.updateSegs(t);
+  }
+
+  async removeSource(src) {
+    this.sources.delete(src.sid);
+    this.srcIdx.delete(src.idx);
+    if (src.fileId) await this.root.removeEntry(src.fileId + '.pcm').catch(() => {});
+  }
+
+  get missingSources() { return [...this.sources.values()].filter((s) => s.missing && this.tracks.some((t) => t.clips.some((c) => c.sid === s.sid))); }
+
+  // 트랙 만들기 (처리 연결 포함). opts: { cat, color }
+  makeTrack(name, opts = {}) {
+    const node = new AudioWorkletNode(this.ctx, 'track-player', { numberOfInputs: 0, outputChannelCount: [2] });
     const fxc = buildTrackChain(this.ctx);
-    fxc.trim.gain.value = scale;
     node.connect(fxc.input);
     const toSum = this.ctx.createGain();
     const refGain = this.ctx.createGain();
@@ -110,24 +141,45 @@ export class Engine {
     fxc.send.connect(this.M.vin);
     fxc.trim.connect(refGain).connect(this.ctx.destination);
     this.M.drumKey.connect(fxc.fx, 0, 1);
-    const cat = category(name);
+    const cat = opts.cat || category(name);
     if (cat === 'drums') toSum.connect(this.M.drumKey);
     if (cat === 'vocal') toSum.connect(this.M.vocalKey);
     const t = {
-      id, fileId: id, name, frames, ch, peaks, scale,
-      file: await fh.getFile(),
+      id: opts.id || crypto.randomUUID(), name, color: opts.color,
       node, fxc, toSum, refGain, cat, sent: new Set(), mix: trackDefaults(),
-      clips: [{ id: newClipId(), start: 0, src: 0, len: frames, fi: 0, fo: 0 }],
-      xfade: true, volumeDb: 0, muted: false, solo: false, under: 0,
+      clips: [], xfade: true, volumeDb: 0, muted: false, solo: false, under: 0,
       segs: [],
     };
     node.port.onmessage = (e) => {
       if (e.data.type === 'tick') { t.under = e.data.under; this.feed(); }
     };
     this.tracks.push(t);
+    return t;
+  }
+
+  // 음원 하나로 트랙 하나 (불러오기)
+  async addTrack(name, arrayBuffer) {
+    const src = await this.addSource(name, arrayBuffer);
+    const t = this.makeTrack(name);
+    t.home = src.sid;
+    t.clips = [{ id: newClipId(), sid: src.sid, start: 0, src: 0, len: src.frames, fi: 0, fo: 0 }];
     this.updateSegs(t);
     this.applyAll();
     return t;
+  }
+
+  addEmptyTrack(name) {
+    const t = this.makeTrack(name, { cat: 'other', color: '#7d8794' });
+    this.updateSegs(t);
+    this.applyAll();
+    return t;
+  }
+
+  // 트랙이 쓰는 음원 정보 (분석·렌더용: 워커로도 보낼 수 있는 값만)
+  srcView(t) {
+    const srcs = {};
+    for (const s of t.segs) { const src = this.sources.get(s.sid); if (src && !src.missing) srcs[s.sid] = { file: src.file, ch: src.ch, scale: src.scale }; }
+    return { segs: t.segs, srcs };
   }
 
   async writePcm(w, buf, ch, frames, peaks, scale) {
@@ -162,7 +214,7 @@ export class Engine {
     const clips = t.clips.map((c, i) => ({ c, i })).sort((a, b) => a.c.start - b.c.start || a.i - b.i).map((x) => x.c);
     let segs = [];
     for (const c of clips) {
-      const b = { start: c.start, end: c.start + c.len, src: c.src, fi: c.fi, fo: c.fo };
+      const b = { start: c.start, end: c.start + c.len, src: c.src, fi: c.fi, fo: c.fo, sid: c.sid };
       const next = [];
       for (const a of segs) {
         if (a.end <= b.start || a.start >= b.end) { next.push(a); continue; }
@@ -175,7 +227,7 @@ export class Engine {
         if (a.start < b.start) next.push({ ...a, end: b.start, fo: Math.min(TINY, b.start - a.start) });
         if (a.end > b.end) {
           const cut = b.end - a.start;
-          next.push({ start: b.end, end: a.end, src: a.src + cut, fi: TINY, fo: a.fo });
+          next.push({ start: b.end, end: a.end, src: a.src + cut, fi: TINY, fo: a.fo, sid: a.sid });
         }
       }
       next.push(b);
@@ -185,8 +237,11 @@ export class Engine {
       const len = s.end - s.start;
       s.fi = Math.min(s.fi, len);
       s.fo = Math.min(s.fo, len);
+      const src = this.sources.get(s.sid);
+      s.idx = src ? src.idx : 0; s.ch = src ? src.ch : 2; s.k = src ? src.scale : 1;
     }
-    return segs.filter((s) => s.end > s.start);
+    // 음원이 없는 조각은 소리 내지 않음
+    return segs.filter((s) => s.end > s.start && this.sources.get(s.sid) && !this.sources.get(s.sid).missing);
   }
 
   updateSegs(t) {
@@ -247,22 +302,25 @@ export class Engine {
         const lo = Math.max(a, s.start), hi = Math.min(b, s.end);
         if (lo >= hi) continue;
         const s0 = s.src + (lo - s.start), s1 = s.src + (hi - s.start) - 1;
-        for (let k = Math.floor(s0 / BLOCK); k <= Math.floor(s1 / BLOCK); k++) need.add(k);
+        for (let k = Math.floor(s0 / BLOCK); k <= Math.floor(s1 / BLOCK); k++) need.add(s.idx * KEY + k);
       }
     }
     return need;
   }
 
-  async sendBlock(t, b) {
-    if (t.sent.has(b)) return;
+  async sendBlock(t, key) {
+    if (t.sent.has(key)) return;
+    const src = this.srcIdx.get(Math.floor(key / KEY));
+    const b = key % KEY;
+    if (!src || src.missing) return;
     const first = b * BLOCK;
-    if (first >= t.frames || b < 0) return;
-    t.sent.add(b);
-    const n = Math.min(BLOCK, t.frames - first);
-    const bytes = 2 * t.ch;
-    const ab = await t.file.slice(first * bytes, (first + n) * bytes).arrayBuffer();
-    if (!t.sent.has(b)) return; // 그새 정지·이동으로 필요 없어짐
-    t.node.port.postMessage({ type: 'block', b, data: new Int16Array(ab) }, [ab]);
+    if (first >= src.frames || b < 0) return;
+    t.sent.add(key);
+    const n = Math.min(BLOCK, src.frames - first);
+    const bytes = 2 * src.ch;
+    const ab = await src.file.slice(first * bytes, (first + n) * bytes).arrayBuffer();
+    if (!t.sent.has(key)) return; // 그새 정지·이동으로 필요 없어짐
+    t.node.port.postMessage({ type: 'block', b: key, data: new Int16Array(ab) }, [ab]);
   }
 
   feed() {
@@ -323,20 +381,25 @@ export class Engine {
     if (this.playing) await this.seek(this.position);
   }
 
-  // 트랙 하나 빼기 (연결 끊고 임시 음원 지움)
+  // 트랙 하나 빼기 (연결 끊고, 아무 트랙도 안 쓰는 음원은 지움)
   async removeTrack(t) {
     try { t.node.port.postMessage({ type: 'stop' }); } catch {}
     for (const n of [t.node, t.fxc.out, t.fxc.send, t.toSum, t.refGain]) { try { n.disconnect(); } catch {} }
     this.tracks = this.tracks.filter((x) => x !== t);
-    await this.root.removeEntry((t.fileId || t.id) + '.pcm').catch(() => {});
+    await this.pruneSources();
     this.applyAll();
+  }
+  async pruneSources() {
+    for (const src of [...this.sources.values()]) {
+      if (!this.tracks.some((t) => t.clips.some((c) => c.sid === src.sid))) await this.removeSource(src);
+    }
   }
 
   // 모두 비우기 (새 프로젝트, 프로젝트 열기 전)
   async clearAll() {
     this.stop();
     for (const t of [...this.tracks]) await this.removeTrack(t);
-    this.missing = [];
+    for (const src of [...this.sources.values()]) await this.removeSource(src);
     this.mm = masterDefaults();
     this.mode = 'apply';
     this.ana = {};

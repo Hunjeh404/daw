@@ -34,6 +34,10 @@
   .ic-device-floppy { -webkit-mask-image:url(icons/device-floppy.svg); mask-image:url(icons/device-floppy.svg); }
   .ic-x { -webkit-mask-image:url(icons/x.svg); mask-image:url(icons/x.svg); }
   .ic-link { -webkit-mask-image:url(icons/link.svg); mask-image:url(icons/link.svg); }
+  .ic-plus { -webkit-mask-image:url(icons/plus.svg); mask-image:url(icons/plus.svg); }
+  .ic-copy { -webkit-mask-image:url(icons/copy.svg); mask-image:url(icons/copy.svg); }
+  .ic-clipboard { -webkit-mask-image:url(icons/clipboard.svg); mask-image:url(icons/clipboard.svg); }
+  .ic-cut { -webkit-mask-image:url(icons/cut.svg); mask-image:url(icons/cut.svg); }
   .ic-zoom-out { -webkit-mask-image:url(icons/zoom-out.svg); mask-image:url(icons/zoom-out.svg); }
 
   header { display:flex; align-items:center; gap:10px; padding:10px 12px 6px; }
@@ -59,7 +63,9 @@
   .track .head button { height:32px; min-width:36px; padding:0; border-radius:8px; font-size:13px; font-weight:600; }
   .track .head button.on.s { background:var(--accent); color:var(--ink); }
   .lane { display:block; width:100%; height:52px; margin-top:6px; border-radius:6px; touch-action:pan-x pan-y; }
-  .lane.moving { touch-action:pan-y; }
+  .lane.moving { touch-action:none; }
+  .trow.drop .track { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent) inset; }
+  .trow.cur .track .name { color:var(--accent); }
   .empty { margin:40px 16px; text-align:center; color:var(--dim); }
 
   #panel { border-top:1px solid var(--line); background:var(--panel); padding:8px 12px 10px; }
@@ -69,7 +75,7 @@
   #panel .ph button { height:36px; min-width:36px; padding:0; border:none; background:none; }
   #panel.fold .body { display:none; }
   .acts { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin:8px 0 4px; }
-  .acts button { height:56px; flex-direction:column; gap:2px; font-size:12px; }
+  .acts button { height:52px; flex-direction:column; gap:2px; font-size:12px; }
   .row { display:flex; align-items:center; gap:10px; min-height:44px; }
   .row label { width:88px; flex:none; font-size:14px; color:var(--text); }
   .row input[type=range] { flex:1; accent-color:var(--accent); height:32px; }
@@ -186,6 +192,7 @@
   <div class="tools">
     <button id="undo" aria-label="되돌리기" disabled><i class="ic ic-arrow-back-up"></i></button>
     <button id="redo" aria-label="다시 하기" disabled><i class="ic ic-arrow-forward-up"></i></button>
+    <button id="addTrack"><i class="ic ic-plus"></i>빈 트랙</button>
     <div class="sp"></div>
     <button id="zout" aria-label="축소"><i class="ic ic-zoom-out"></i></button>
     <button id="zin" aria-label="확대"><i class="ic ic-zoom-in"></i></button>
@@ -202,6 +209,9 @@
     <div class="body">
       <div class="acts">
         <button id="aCut"><i class="ic ic-scissors"></i>자르기</button>
+        <button id="aCutX"><i class="ic ic-cut"></i>잘라내기</button>
+        <button id="aCopy"><i class="ic ic-copy"></i>복사</button>
+        <button id="aPaste"><i class="ic ic-clipboard"></i>붙여넣기</button>
         <button id="aDel"><i class="ic ic-trash"></i>삭제</button>
         <button id="aFade"><i class="ic ic-ease-in-out"></i>페이드</button>
         <button id="aMove"><i class="ic ic-arrows-move-horizontal"></i>이동</button>

@@ -52,7 +52,7 @@ export function initExport({ engine: E, flash, sub, setBusy, onStop }) {
         c1.appendChild(r);
       }
     }
-    if (E.missing && E.missing.length) note(c1, `음원이 없는 트랙 ${E.missing.length}개는 제외됩니다.`);
+    if (E.missingSources.length) note(c1, `연결 안 된 음원 ${E.missingSources.length}개의 조각은 빠집니다.`);
     if (st.scope === 'stems') note(c1, '트랙마다 트랙 믹싱 설정과 그 트랙의 리버브까지 넣고, 마스터는 입력 음량만 적용합니다. 0dB를 넘으면 모든 트랙을 같은 만큼 낮춥니다. 파일들은 zip 하나로 묶습니다.');
 
     // 구간: 앞뒤 자르기와 전체 페이드

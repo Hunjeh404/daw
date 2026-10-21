@@ -1,4 +1,5 @@
 // 프로젝트: 음원은 빼고 작업 결과만 저장한다. 앱 안(IndexedDB) 목록과 .json 파일 둘 다.
+// v2: 음원 목록(sources)과 트랙(클립마다 어느 음원인지)을 따로 저장. v1(트랙 하나 = 음원 하나)도 열 수 있다.
 const DB = 'daw4', STORE = 'projects';
 
 function db() {
@@ -28,29 +29,24 @@ export const deleteProject = (id) => tx('readwrite', (s) => s.delete(id));
 const b64 = (bytes) => { let s = ''; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000)); return btoa(s); };
 const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 
-// 트랙 상태 (음원 빼고)
-function trackState(t, slot) {
+function trackState(t) {
   const ana = t.ana ? { ...t.ana } : null;
   if (ana) delete ana.blocks;
   return {
-    id: t.id, name: t.name, slot, frames: t.frames, ch: t.ch, scale: t.scale, color: t.color, cat: t.cat,
+    id: t.id, name: t.name, color: t.color, cat: t.cat, home: t.home || null,
     clips: t.clips.map((c) => ({ ...c })), xfade: t.xfade, volumeDb: t.volumeDb, muted: t.muted, solo: t.solo,
     mix: structuredClone(t.mix), ana,
   };
 }
 
-// 화면 순서: 트랙마다 slot(저장 때 자리), 새로 들어온 트랙은 뒤로
-export function ordered(E) {
-  const all = [...E.tracks.map((t, i) => ({ t, k: t.slot ?? 1000 + i })), ...E.missing.map((m) => ({ t: m, k: m.slot }))];
-  return all.sort((a, b) => a.k - b.k).map((x) => x.t);
-}
-
 export function serialize(E, name, id) {
   const meta = E.meta || {};
   const exp = E.exp || {};
+  const used = new Set(E.tracks.flatMap((t) => t.clips.map((c) => c.sid)));
   return {
-    app: 'DAW4', v: 1, id, name, savedAt: Date.now(),
-    tracks: ordered(E).map((t, i) => (E.missing.includes(t) ? { ...t, slot: i } : trackState(t, i))),
+    app: 'DAW4', v: 2, id, name, savedAt: Date.now(),
+    sources: [...E.sources.values()].filter((s) => used.has(s.sid)).map((s) => ({ sid: s.sid, name: s.name, frames: s.frames, ch: s.ch, scale: s.scale })),
+    tracks: E.tracks.map(trackState),
     mm: structuredClone(E.mm), mode: E.mode, loop: { ...E.loop },
     ana: { rawLufs: E.ana.rawLufs ?? null, procLufs: E.ana.procLufs ?? null, refLufs: E.ana.refLufs ?? null, hasFit: !!E.ana.hasFit },
     exp: { scope: exp.scope, fmt: exp.fmt, bits: exp.bits, off: [...(exp.off || [])], a: exp.a, b: exp.b, fi: exp.fi, fo: exp.fo },
@@ -61,9 +57,28 @@ export function serialize(E, name, id) {
   };
 }
 
-// 저장된 값을 엔진에 넣는다 (트랙은 모두 음원 없는 자리로)
-export function applyProject(E, p) {
-  E.missing = p.tracks.map((t) => ({ ...t }));
+// v1(트랙마다 자기 음원 하나)을 v2 모양으로
+function upgrade(p) {
+  if (p.v >= 2) return p;
+  return {
+    ...p, v: 2,
+    sources: p.tracks.map((t) => ({ sid: t.id, name: t.name, frames: t.frames, ch: t.ch, scale: t.scale })),
+    tracks: [...p.tracks].sort((a, b) => (a.slot ?? 0) - (b.slot ?? 0)).map((t) => ({ ...t, home: t.id, clips: t.clips.map((c) => ({ ...c, sid: t.id })) })),
+  };
+}
+
+// 저장된 값을 엔진에 넣는다. 트랙은 모두 만들고, 음원은 모두 "아직 없음"으로
+export function applyProject(E, p0) {
+  const p = upgrade(p0);
+  for (const s of p.sources) E.addMissingSource(s);
+  for (const st of p.tracks) {
+    const t = E.makeTrack(st.name, { id: st.id, cat: st.cat, color: st.color });
+    Object.assign(t, {
+      home: st.home, clips: st.clips.map((c) => ({ ...c })), xfade: st.xfade, volumeDb: st.volumeDb, muted: st.muted, solo: st.solo,
+      mix: { ...t.mix, ...structuredClone(st.mix) }, ana: st.ana,
+    });
+    E.updateSegs(t);
+  }
   Object.assign(E.mm, structuredClone(p.mm));
   E.mode = p.mode === 'ref' && !p.tracks.some((t) => t.mix.ref) ? 'apply' : p.mode || 'apply';
   E.loop = { ...p.loop };
@@ -75,24 +90,14 @@ export function applyProject(E, p) {
     if (m.art) { const bytes = unb64(m.art.b64); art = { mime: m.art.mime, bytes, url: URL.createObjectURL(new Blob([bytes], { type: m.art.mime })) }; }
     Object.assign(E.meta, { title: m.title || '', artist: m.artist || '', lyrics: m.lyrics || '', srt: m.srt || null, srtName: m.srtName || '', saveSrt: m.saveSrt !== false, art });
   }
+  E.applyAll();
 }
 
-// 새로 풀어 둔 트랙 t를 음원 없는 자리 중 하나에 맞춘다. 맞는 자리가 없으면 null
-export function matchMissing(E, t) {
-  const same = E.missing.filter((m) => m.frames === t.frames && m.ch === t.ch);
-  if (!same.length) return null;
-  return same.find((m) => m.name === t.name) || same[0];
-}
-
-// 맞춘 자리의 저장값을 트랙에 입힌다
-export function adopt(E, t, m) {
-  Object.assign(t, {
-    id: m.id, name: m.name, slot: m.slot, color: m.color, cat: m.cat,
-    clips: m.clips.map((c) => ({ ...c })), xfade: m.xfade, volumeDb: m.volumeDb, muted: m.muted, solo: m.solo,
-    mix: structuredClone(m.mix), ana: m.ana,
-  });
-  E.missing = E.missing.filter((x) => x !== m);
-  E.updateSegs(t);
+// 새로 푼 음원 src를 채울 빈 자리 (길이·채널이 같고, 이름이 같으면 우선). 없으면 null
+export function matchSource(E, src) {
+  const holes = [...E.sources.values()].filter((s) => s.missing && s.frames === src.frames && s.ch === src.ch);
+  if (!holes.length) return null;
+  return holes.find((s) => s.name === src.name) || holes[0];
 }
 
 export function parseProjectFile(text) {

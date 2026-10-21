@@ -24,10 +24,9 @@ export async function renderRange(E, a, b, onChunk, opt = {}) {
     for (const t of use) {
       const ref = t.ana?.lufs ?? -20;
       const fxc = buildTrackChain(ctx, trackFxParams(t.mix, false, ref));
-      fxc.trim.gain.value = t.scale;
       applyTrack(fxc, t.mix, false, ctx, ref, true);
       fxc.fader.gain.value = dbToLin(t.volumeDb);
-      const [L, R] = await readWindow(t, w0, c1);
+      const [L, R] = await readWindow(E.srcView(t), w0, c1);
       const buf = ctx.createBuffer(2, len, SR);
       buf.copyToChannel(L, 0); buf.copyToChannel(R, 1);
       const src = ctx.createBufferSource();

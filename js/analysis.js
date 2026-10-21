@@ -44,7 +44,7 @@ export function measureTracks(E, onProgress) {
     w.postMessage({
       dur: E.duration,
       tracks: E.tracks.map((t) => ({
-        file: t.file, ch: t.ch, segs: t.segs, scale: t.scale, ref: t.mix.ref,
+        ...E.srcView(t), ref: t.mix.ref,
         live: !t.mix.ref && !t.muted && (!anySolo || t.solo),
       })),
     });

@@ -26,12 +26,12 @@ export function initProjects({ engine: E, flash, clearAll, opened, isBusy }) {
     mk('저장', () => save(false), 'xgo');
     mk('다른 이름으로 저장', () => save(true));
     mk('파일로 내보내기', () => {
-      if (!E.tracks.length && !E.missing.length) { flash('저장할 트랙이 없습니다'); return; }
+      if (!E.tracks.length) { flash('저장할 트랙이 없습니다'); return; }
       const p = serialize(E, nameNow(), E.projectId || crypto.randomUUID());
       download(new Blob([JSON.stringify(p)], { type: 'application/json' }), `${safe(p.name)}.daw4.json`);
     });
     mk('새 프로젝트', async () => {
-      if ((E.tracks.length || E.missing.length) && !confirm('지금 작업 중인 내용은 저장하지 않으면 사라집니다. 새로 시작할까요?')) return;
+      if (E.tracks.length && !confirm('지금 작업 중인 내용은 저장하지 않으면 사라집니다. 새로 시작할까요?')) return;
       await clearAll();
       E.projectId = null; E.projectName = '';
       close();
@@ -41,7 +41,7 @@ export function initProjects({ engine: E, flash, clearAll, opened, isBusy }) {
 
     async function save(asNew) {
       if (isBusy()) { flash('분석·파일 만들기가 끝난 뒤에 저장하세요'); return; }
-      if (!E.tracks.length && !E.missing.length) { flash('저장할 트랙이 없습니다'); return; }
+      if (!E.tracks.length) { flash('저장할 트랙이 없습니다'); return; }
       const id = asNew || !E.projectId ? crypto.randomUUID() : E.projectId;
       const p = serialize(E, nameNow(), id);
       try {
@@ -82,7 +82,7 @@ export function initProjects({ engine: E, flash, clearAll, opened, isBusy }) {
 
   async function load(p) {
     if (isBusy()) { flash('분석·파일 만들기가 끝난 뒤에 여세요'); return; }
-    if ((E.tracks.length || E.missing.length) && !confirm('지금 작업 중인 내용은 저장하지 않으면 사라집니다. 열까요?')) return;
+    if (E.tracks.length && !confirm('지금 작업 중인 내용은 저장하지 않으면 사라집니다. 열까요?')) return;
     await clearAll();
     applyProject(E, p);
     E.projectId = p.id; E.projectName = p.name;
