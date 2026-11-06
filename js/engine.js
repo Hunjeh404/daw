@@ -333,8 +333,8 @@ export class Engine {
     if (!this.playing) return;
     const pos = this.position;
     const P = this.prev;
-    if (P && pos >= P.b) { this.stop(); this.pausedPos = P.a; this.onEnd && this.onEnd(); return; }
-    if (!this.loop.on && pos >= this.duration) { this.stop(); this.pausedPos = 0; this.onEnd && this.onEnd(); return; }
+    if (P && pos >= (P.end ?? P.b)) { this.stop(); this.pausedPos = P.a; this.onEnd && this.onEnd(); return; }
+    if (!this.loop.on && pos >= this.duration && !(P && (P.end ?? P.b) > pos)) { this.stop(); this.pausedPos = 0; this.onEnd && this.onEnd(); return; }
     const wins = this.windows(Math.max(0, pos - BLOCK), AHEAD + BLOCK);
     for (const t of this.tracks) {
       const need = this.neededBlocks(t, wins);
@@ -353,7 +353,7 @@ export class Engine {
     await this.ctx.resume();
     let pos = this.pausedPos;
     const P = this.prev;
-    if (P && (pos < P.a || pos >= P.b)) pos = P.a;
+    if (P && (pos < P.a || pos >= (P.end ?? P.b))) pos = P.a;
     if (!P && !this.loop.on && pos >= this.duration) pos = 0;
     this.startPos = pos;
     // 시작 직후 3초 분량은 모든 트랙에 확실히 넣어 둔다

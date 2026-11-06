@@ -4,14 +4,16 @@ import { srtText, prepareArt } from './filewrite.js';
 import { exportAudio } from './export.js';
 import { PEAK } from './engine.js';
 import { dbToLin } from './dsp.js';
+import { beatEnv, gridAt, tailFor } from './beat.js';
 
 const $ = (id) => document.getElementById(id);
 const mb = (n) => (n / 1048576).toFixed(1) + 'MB';
 
 export function initExport({ engine: E, flash, sub, setBusy, onStop }) {
   const body = $('expBody'), foot = $('expFoot');
-  const st = E.exp = { scope: 'mix', fmt: 'wav', bits: 24, off: new Set(), listOpen: false, a: 0, b: null, fi: 0, fo: 0 };
+  const st = E.exp = { scope: 'mix', fmt: 'wav', bits: 24, off: new Set(), listOpen: false, a: 0, b: null, fi: 0, fo: 0, tail: 1, tailAuto: true };
   const SR = 44100;
+  const tsec = (v) => (Math.abs(v * 10 - Math.round(v * 10)) < 1e-6 ? v.toFixed(1) : v.toFixed(2));
   const tfmt = (sec) => { const m = Math.floor(sec / 60), r = sec - m * 60; return `${m}:${r.toFixed(1).padStart(4, '0')}`; };
   const meta = E.meta = { title: '', artist: '', lyrics: '', art: null, srt: null, srtName: '', saveSrt: true };
   let busy = false;
@@ -21,6 +23,26 @@ export function initExport({ engine: E, flash, sub, setBusy, onStop }) {
 
   const live = () => E.tracks.filter((t) => !t.mix.ref);
   const included = () => live().filter((t) => !st.off.has(t.id));
+
+  // 박자 (포함 트랙·클립이 바뀔 때만 다시 계산)
+  // 끝 지점마다 한 번 계산해 두고, 계산 중이면 끝난 뒤 화면을 고친다
+  let envKey = '', envVal = null, gKey = '', gVal = null, gJob = null, onGrid = null;
+  function grid() {
+    const inc = included();
+    const key = inc.map((t) => `${t.id}:${t.volumeDb}:${t.clips.map((c) => `${c.sid},${c.start},${c.src},${c.len}`).join(';')}`).join('|') + '|' + E.duration;
+    if (key !== envKey) { envKey = key; envVal = inc.length ? beatEnv(E, inc) : null; gKey = ''; }
+    const k2 = key + '|' + st.b;
+    if (k2 !== gKey) {
+      gKey = k2; gVal = undefined;
+      const job = gJob = gridAt(E, inc, envVal, st.b).catch(() => null).then((g) => {
+        if (gJob !== job) return;
+        gVal = g; gJob = null;
+        onGrid && onGrid();
+      });
+    }
+    return gVal;          // undefined = 계산 중
+  }
+  const autoTail = () => { if (st.tailAuto) { const g = grid(); if (g !== undefined) st.tail = tailFor(g, st.b, 1); } };
 
   function card(title) {
     const c = document.createElement('div');
@@ -67,10 +89,16 @@ export function initExport({ engine: E, flash, sub, setBusy, onStop }) {
     const cR = card('구간');
     const sum = document.createElement('div');
     sum.className = 'xv';
-    const paintSum = () => { sum.textContent = `${tfmt(st.a)} ~ ${tfmt(st.b)} (길이 ${tfmt(st.b - st.a)})`; };
+    autoTail();
+    let tailRow = null;
+    const paintSum = () => {
+      autoTail();
+      sum.textContent = `${tfmt(st.a)} ~ ${tfmt(st.b)} (길이 ${tfmt(st.b - st.a)}) + 끝 무음 ${tsec(st.tail)}초 = ${tfmt(st.b - st.a + st.tail)}`;
+      if (tailRow) { tailRow.querySelector('input').value = st.tail; tailRow.querySelector('.val').textContent = tsec(st.tail) + ' 초'; }
+    };
     paintSum();
     cR.appendChild(sum);
-    cR.appendChild(waveBox(dur, paintSum));
+    cR.appendChild(waveBox(Math.max(dur, st.b + st.tail), paintSum, dur));
     const timeSlider = (label, key, lo) => slider({ label, min: 0, max: dur.toFixed(1), step: 0.1, noUndo: true, get: () => st[key], show: tfmt, edit: (v) => v.toFixed(1),
       set: (v) => { st[key] = key === 'a' ? Math.min(v, st.b - 1) : Math.max(v, st.a + 1); paintSum(); wave?.draw(); syncPrev(); } });
     cR.append(timeSlider('시작', 'a'), timeSlider('끝', 'b'));
@@ -85,6 +113,31 @@ export function initExport({ engine: E, flash, sub, setBusy, onStop }) {
       slider({ label: '페이드 인', min: 0, max: 10, step: 0.1, unit: '초', noUndo: true, get: () => st.fi, show: (v) => v.toFixed(1), set: (v) => { st.fi = v; wave?.draw(); syncPrev(); } }),
       slider({ label: '페이드 아웃', min: 0, max: 20, step: 0.1, unit: '초', noUndo: true, get: () => st.fo, show: (v) => v.toFixed(1), set: (v) => { st.fo = v; wave?.draw(); syncPrev(); } }),
     );
+    // 끝 무음: 다음 곡이 바로 붙지 않게. 기본은 박자에 맞춰 다음 마디 시작에서 끝나게 (최소 1초)
+    tailRow = slider({ label: '끝 무음', min: 0, max: 10, step: 0.1, unit: '초', noUndo: true, get: () => st.tail, show: tsec, edit: tsec,
+      set: (v) => { st.tail = v; st.tailAuto = false; paintSum(); paintTailNote(); wave?.draw(); syncPrev(); } });
+    cR.appendChild(tailRow);
+    const tailNote = document.createElement('div');
+    tailNote.className = 'note';
+    const paintTailNote = () => {
+      const g = grid();
+      tailNote.textContent = !st.tailAuto ? '직접 정한 길이입니다. 끝을 옮겨도 그대로 둡니다.'
+        : g === undefined ? '끝 부분 박자를 찾는 중입니다…'
+        : g ? `박자에 맞춰 다음 마디 시작에서 끝나게 했습니다 (한 마디 ${g.bar.toFixed(2)}초). 끝을 옮기면 다시 맞춥니다.`
+          : '박자를 찾지 못해 1초로 두었습니다.';
+    };
+    paintTailNote();
+    cR.appendChild(tailNote);
+    onGrid = () => { if (!tailNote.isConnected) return; paintSum(); paintTailNote(); wave?.draw(); syncPrev(); };
+    if (!st.tailAuto) {
+      const tb = document.createElement('div');
+      tb.className = 'xbtns';
+      const b = document.createElement('button');
+      b.textContent = '박자에 맞추기';
+      b.onclick = () => { st.tailAuto = true; render(); };
+      tb.appendChild(b);
+      cR.appendChild(tb);
+    }
 
     // 파일 형식
     const c2 = card('파일 형식');
@@ -152,7 +205,7 @@ export function initExport({ engine: E, flash, sub, setBusy, onStop }) {
     clearTimeout(prevT);
     prevT = setTimeout(() => {
       const on = active && E.tracks.length && !E.loading && st.b != null;
-      E.setPreview(on ? { a: Math.round(st.a * SR), b: Math.round(st.b * SR), fi: Math.round(st.fi * SR), fo: Math.round(st.fo * SR), off: new Set(st.off) } : null);
+      E.setPreview(on ? { a: Math.round(st.a * SR), b: Math.round(st.b * SR), end: Math.round((st.b + st.tail) * SR), fi: Math.round(st.fi * SR), fo: Math.round(st.fo * SR), off: new Set(st.off) } : null);
     }, 120);
   }
   function setActive(v) {
@@ -162,12 +215,13 @@ export function initExport({ engine: E, flash, sub, setBusy, onStop }) {
   }
 
   // 구간 파형: 포함 트랙을 합친 모양. 아래 손잡이로 시작·끝, 위 동그라미로 페이드 인·아웃, 누르면 그 위치로 이동
-  function waveBox(dur, paintSum) {
+  function waveBox(dur, paintSum, song) {
     const cv = document.createElement('canvas');
     cv.className = 'xwave';
     const H = 96;
     let env = null, W = 0, envKey = '', norm = 0;
-    if (!zv || zv.dur !== dur) zv = { v0: 0, v1: dur, dur };
+    if (!zv || (zv.dur !== dur && zv.v1 - zv.v0 >= zv.dur - 0.01)) zv = { v0: 0, v1: dur, dur };
+    else if (zv.dur !== dur) { const sp = Math.min(dur, zv.v1 - zv.v0), v0 = Math.max(0, Math.min(dur - sp, zv.v0)); zv = { v0, v1: v0 + sp, dur }; }
     const d = () => window.devicePixelRatio || 1;
     const span = () => zv.v1 - zv.v0;
     const fx = (sec) => ((sec - zv.v0) / span()) * W;
@@ -228,6 +282,14 @@ export function initExport({ engine: E, flash, sub, setBusy, onStop }) {
         g.fillStyle = 'rgba(138,143,153,.28)';
         g.fillRect(x, mid - y, 1, y * 2);
         if (k > 0) { g.fillStyle = '#e9a23b'; const yy = Math.max(0.5, y * k); g.fillRect(x, mid - yy, 1, yy * 2); }
+      }
+      // 끝 무음 자리
+      if (st.tail > 0) {
+        const x0 = fx(st.b), x1 = fx(st.b + st.tail);
+        g.fillStyle = 'rgba(24,26,31,.82)'; g.fillRect(x0, 0, x1 - x0, H);
+        g.strokeStyle = 'rgba(233,162,59,.55)'; g.setLineDash([4, 4]); g.lineWidth = 1;
+        g.beginPath(); g.moveTo(x0, mid + 0.5); g.lineTo(x1, mid + 0.5); g.moveTo(x1 - 0.5, 0); g.lineTo(x1 - 0.5, H); g.stroke(); g.setLineDash([]);
+        if (x1 - x0 > 46) { g.fillStyle = 'rgba(232,233,236,.75)'; g.font = '11px system-ui, sans-serif'; g.textAlign = 'center'; g.fillText(`무음 ${st.tail.toFixed(1)}초`, (x0 + x1) / 2, mid - 8); g.textAlign = 'start'; }
       }
       // 페이드 선
       g.strokeStyle = 'rgba(232,233,236,.8)'; g.lineWidth = 1.5;
@@ -299,7 +361,7 @@ export function initExport({ engine: E, flash, sub, setBusy, onStop }) {
       const sec = Math.max(0, Math.min(dur, xs(x)));
       const r1 = (v) => Math.round(v * 10) / 10;
       if (drag.key === 'a') st.a = r1(Math.min(sec, st.b - 1));
-      if (drag.key === 'b') st.b = r1(Math.max(sec, st.a + 1));
+      if (drag.key === 'b') st.b = r1(Math.min(song, Math.max(sec, st.a + 1)));
       if (drag.key === 'fi') st.fi = r1(Math.max(0, Math.min(sec - st.a, 10)));
       if (drag.key === 'fo') st.fo = r1(Math.max(0, Math.min(st.b - sec, 20)));
       const room = st.b - st.a;
@@ -357,12 +419,13 @@ export function initExport({ engine: E, flash, sub, setBusy, onStop }) {
     if (!tracks.length) return;
     busy = true; setBusy(true); paintFoot();
     E.stop(); onStop && onStop();
+    if (gJob) { sub('끝 부분 박자를 찾는 중…'); await gJob; autoTail(); }
     const label = st.scope === 'mix' ? '전체 믹스' : `트랙 ${tracks.length}개`;
     sub(`${label} 만드는 중 0%`);
     try {
       const r = await exportAudio(E, {
         scope: st.scope, tracks, fmt: st.fmt, bits: st.bits,
-        range: { a: Math.round(st.a * SR), b: Math.round(st.b * SR), fi: Math.round(st.fi * SR), fo: Math.round(st.fo * SR) },
+        range: { a: Math.round(st.a * SR), b: Math.round(st.b * SR), fi: Math.round(st.fi * SR), fo: Math.round(st.fo * SR), tail: Math.round(st.tail * SR) },
         meta: { title: meta.title.trim(), artist: meta.artist.trim(), lyrics: st.fmt === 'mp3' ? meta.lyrics : '', art: st.fmt === 'mp3' ? meta.art : null },
         srt: meta.srt && meta.saveSrt ? meta.srt : null,
       }, (p, pass) => sub(`${label} ${pass ? '다시 ' : ''}만드는 중 ${Math.round(p * 100)}%`));

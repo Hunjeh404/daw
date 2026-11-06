@@ -49,7 +49,7 @@ export function serialize(E, name, id) {
     tracks: E.tracks.map(trackState),
     mm: structuredClone(E.mm), mode: E.mode, loop: { ...E.loop },
     ana: { rawLufs: E.ana.rawLufs ?? null, procLufs: E.ana.procLufs ?? null, refLufs: E.ana.refLufs ?? null, hasFit: !!E.ana.hasFit },
-    exp: { scope: exp.scope, fmt: exp.fmt, bits: exp.bits, off: [...(exp.off || [])], a: exp.a, b: exp.b, fi: exp.fi, fo: exp.fo },
+    exp: { scope: exp.scope, fmt: exp.fmt, bits: exp.bits, off: [...(exp.off || [])], a: exp.a, b: exp.b, fi: exp.fi, fo: exp.fo, tail: exp.tail, tailAuto: exp.tailAuto },
     meta: {
       title: meta.title || '', artist: meta.artist || '', lyrics: meta.lyrics || '', srt: meta.srt || null, srtName: meta.srtName || '', saveSrt: meta.saveSrt !== false,
       art: meta.art ? { mime: meta.art.mime, b64: b64(meta.art.bytes) } : null,
@@ -83,7 +83,7 @@ export function applyProject(E, p0) {
   E.mode = p.mode === 'ref' && !p.tracks.some((t) => t.mix.ref) ? 'apply' : p.mode || 'apply';
   E.loop = { ...p.loop };
   E.ana = { ...p.ana };
-  if (E.exp) Object.assign(E.exp, { ...p.exp, off: new Set(p.exp.off || []), b: p.exp.b ?? null });
+  if (E.exp) Object.assign(E.exp, { ...p.exp, off: new Set(p.exp.off || []), b: p.exp.b ?? null, tail: p.exp.tail ?? 1, tailAuto: p.exp.tailAuto ?? true });
   if (E.meta) {
     const m = p.meta || {};
     let art = null;
