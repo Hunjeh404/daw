@@ -6,6 +6,8 @@ import { initMix } from './mix.js';
 import { initExport } from './exportui.js';
 import { initProjects } from './projectui.js';
 import { matchSource } from './project.js';
+import { parseMidi, midiKind } from './midi.js';
+import { renderMidi, defaultKit, KITS, kitName } from './instrument.js';
 
 const engine = new Engine();
 const $ = (id) => document.getElementById(id);
@@ -35,7 +37,8 @@ const fmt = (frames, tenth) => {
   return tenth ? `${m}:${r.toFixed(1).padStart(4, '0')}` : `${m}:${String(Math.floor(r)).padStart(2, '0')}`;
 };
 const isAudio = (n) => /\.(mp3|wav)$/i.test(n) && !/(^|\/)(__MACOSX\/|\._)/.test(n);
-const baseName = (n) => n.split('/').pop().replace(/\.(mp3|wav)$/i, '');
+const isMidi = (n) => /\.midi?$/i.test(n) && !/(^|\/)(__MACOSX\/|\._)/.test(n);
+const baseName = (n) => n.split('/').pop().replace(/\.(mp3|wav|midi?)$/i, '');
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 let subMsg = '';
 function sub(text) { subMsg = text; $('sub').textContent = text; }
@@ -107,17 +110,22 @@ async function loadFiles(files, relink) {
     if (/\.zip$/i.test(f.name)) {
       try {
         const entries = await listZip(f);
-        for (const en of entries) if (isAudio(en.name)) jobs.push({ name: baseName(en.name), wav: /\.wav$/i.test(en.name), get: () => readEntry(f, en) });
+        for (const en of entries) {
+          if (isAudio(en.name)) jobs.push({ name: baseName(en.name), wav: /\.wav$/i.test(en.name), get: () => readEntry(f, en) });
+          else if (isMidi(en.name) && !relink) jobs.push({ name: baseName(en.name), midi: true, get: () => readEntry(f, en) });
+        }
       } catch (err) { flash(f.name + ': ' + err.message); return; }
     } else if (isAudio(f.name)) {
       jobs.push({ name: baseName(f.name), wav: /\.wav$/i.test(f.name), get: () => f.arrayBuffer() });
+    } else if (isMidi(f.name) && !relink) {
+      jobs.push({ name: baseName(f.name), midi: true, get: () => f.arrayBuffer() });
     }
   }
-  if (!jobs.length) { flash('불러올 MP3·WAV가 없습니다'); return; }
+  if (!jobs.length) { flash('불러올 MP3·WAV·미디가 없습니다'); return; }
   // 같은 이름이 여러 번 들어 있으면 (zip 안에 WAV·MP3가 함께 있거나 폴더가 겹칠 때) 하나만, WAV를 먼저
   {
     const pick = new Map();
-    for (const j of jobs) { const o = pick.get(j.name); if (!o || (j.wav && !o.wav)) pick.set(j.name, j); }
+    for (const j of jobs) { const k = (j.midi ? 'm:' : '') + j.name; const o = pick.get(k); if (!o || (j.wav && !o.wav)) pick.set(k, j); }
     jobs.splice(0, jobs.length, ...pick.values());
   }
   jobs.sort((a, b) => a.name.localeCompare(b.name, 'ko', { numeric: true }));
@@ -129,13 +137,33 @@ async function loadFiles(files, relink) {
   }
 
   const first = !engine.tracks.length;
-  const added = [], wrong = [];
-  let linked = 0;
+  const added = [], wrong = [], midiSkip = [];
+  let linked = 0, midiAdded = 0, doubles = 0;
   loading = true; engine.loading = true; refreshTabs();
   for (let i = 0; i < jobs.length; i++) {
     if (relink && !engine.missingSources.length) break;
     sub(`${relink ? '연결하는' : '불러오는'} 중 ${i + 1}/${jobs.length}: ${jobs[i].name}`);
     try {
+      if (jobs[i].midi) {
+        const bytes = new Uint8Array(await jobs[i].get());
+        const pm = parseMidi(bytes);
+        const kind = midiKind(jobs[i].name, pm);
+        if (!kind) { midiSkip.push(jobs[i].name); continue; }
+        const kit = defaultKit(kind, pm);
+        sub(`미디를 ${kitName(kit)} 소리로 만드는 중 ${i + 1}/${jobs.length}: ${jobs[i].name}`);
+        const r = await renderMidi(engine.ctx, bytes, kind, kit, SR);
+        doubles += r.dropped;
+        const src = await engine.addBuffer(jobs[i].name, r.buf, { midi: { bytes, kind, kit } });
+        const t = engine.makeTrack(src.name + ' 미디');
+        t.home = src.sid;
+        t.clips = [{ id: newClipId(), sid: src.sid, start: 0, src: 0, len: src.frames, fi: 0, fo: 0 }];
+        t.color = colorFor(t.name);
+        engine.updateSegs(t);
+        renderTrack(t);
+        added.push(t);
+        midiAdded++;
+        continue;
+      }
       const src = await engine.addSource(jobs[i].name, await jobs[i].get());
       const hole = matchSource(engine, src);
       if (hole) {
@@ -175,7 +203,63 @@ async function loadFiles(files, relink) {
   }
   // 처음 올릴 때, 또는 원곡이 있는 상태에서 스템을 더 올릴 때 자동으로 믹싱·마스터를 잡는다 (연결은 저장된 설정 그대로)
   if (added.length && (first || engine.hasRef)) await mix.autoNew(added);
+  if (midiAdded || midiSkip.length) {
+    flash((midiAdded ? `미디 트랙 ${midiAdded}개 추가` : '추가한 미디 트랙 없음')
+      + (doubles ? ` · 겹친 타격 ${doubles}개 정리` : '')
+      + (midiSkip.length ? ` · 드럼·베이스가 아닌 미디 ${midiSkip.length}개는 건너뜀` : ''));
+  }
   showStats();
+}
+
+// ---------- 미디 트랙 ----------
+// 트랙이 쓰는 미디 음원 (하나일 때만)
+function midiSrcOf(t) {
+  const sids = new Set(t.clips.map((c) => c.sid));
+  const ms = [...sids].map((id) => engine.sources.get(id)).filter((s) => s && s.midi);
+  return ms.length === 1 && sids.size === 1 ? ms[0] : null;
+}
+
+// 키트를 바꾸면 같은 길이로 다시 구워 음원만 바꿔 끼운다 (클립 자리·페이드는 그대로)
+async function changeKit(t, src, kit) {
+  if (loading || busy) { flash('지금 하는 작업이 끝난 뒤에 바꾸세요'); renderPanel(); return; }
+  loading = true; engine.loading = true; refreshTabs();
+  engine.stop(); updatePlayBtn();
+  try {
+    sub(`${kitName(kit)} 소리로 다시 만드는 중: ${src.name}`);
+    const r = await renderMidi(engine.ctx, src.midi.bytes, src.midi.kind, kit, SR);
+    const ns = await engine.addBuffer(src.name, r.buf, { midi: { ...src.midi, kit } });
+    const swap = (clips) => { for (const c of clips) if (c.sid === src.sid) c.sid = ns.sid; };
+    for (const x of engine.tracks) { swap(x.clips); if (x.home === src.sid) x.home = ns.sid; }
+    for (const snap of [...undoStack, ...redoStack]) for (const x of snap.tracks) swap(x.clips);
+    if (clipBoard && clipBoard.sid === src.sid) clipBoard.sid = ns.sid;
+    await engine.removeSource(src);
+    for (const x of engine.tracks) engine.updateSegs(x);
+    engine.applyAll();
+    flash(`${kitName(kit)} 소리로 바꿨습니다`);
+  } catch (err) {
+    flash('키트를 바꾸지 못했습니다: ' + err.message);
+  }
+  loading = false; engine.loading = false; refreshTabs();
+  showStats();
+  afterChange();
+}
+
+// 프로젝트를 열 때: 미디 음원은 저장된 미디로 다시 굽는다
+async function bakeMidiHoles() {
+  const holes = engine.missingSources.filter((s) => s.midi);
+  if (!holes.length) return;
+  await cleared;
+  await engine.init();
+  loading = true; engine.loading = true; refreshTabs();
+  for (const h of holes) {
+    try {
+      sub(`미디 소리 만드는 중: ${h.name}`);
+      const r = await renderMidi(engine.ctx, h.midi.bytes, h.midi.kind, h.midi.kit, SR);
+      engine.fillSource(h, await engine.addBuffer(h.name, r.buf));
+    } catch (err) { flash(`${h.name}: 미디 소리를 만들지 못했습니다 (${err.message})`); }
+  }
+  loading = false; engine.loading = false; refreshTabs();
+  engine.applyAll();
 }
 
 function orderRows() {
@@ -557,6 +641,14 @@ function renderPanel() {
 function renderVol(t) {
   const vb = $('volBox');
   vb.innerHTML = '';
+  const ms = midiSrcOf(t);
+  if (ms) {
+    const row = document.createElement('div');
+    row.className = 'row kit';
+    row.innerHTML = '<label>키트</label>';
+    row.append(segmented(KITS[ms.midi.kind], ms.midi.kit, (k) => { if (k !== ms.midi.kit) changeKit(t, ms, k); }));
+    vb.append(row);
+  }
   vb.append(slider({
     label: '트랙 볼륨', min: -24, max: 12, step: 0.1, unit: 'dB',
     get: () => t.volumeDb, show: (v) => (v > 0 ? '+' : '') + v.toFixed(1),
@@ -709,6 +801,10 @@ const proj = initProjects({
     for (const t of engine.tracks) { if (!t.color) t.color = colorFor(t.name); renderTrack(t); }
     orderRows(); fitZoom(); afterChange(); paintRelink(); renderCompare(); refreshTabs();
     flash(`"${engine.projectName}" 열었습니다 · 음원을 연결하세요`);
+    bakeMidiHoles().then(() => {
+      afterChange(); paintRelink(); renderCompare(); showStats();
+      if (!engine.missingSources.length) flash(`"${engine.projectName}" 열었습니다`);
+    });
   },
 });
 $('proj').onclick = () => proj.open();

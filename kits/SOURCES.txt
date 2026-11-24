@@ -1,0 +1,8 @@
+키트 샘플 출처 (모두 CC0 1.0, 원본에서 골라 섞고 앞 무음을 잘라 ogg로 변환)
+
+drum-acoustic : Virtuosity Drums (Versilian Studios / Karoryfer) - github.com/sfzinstruments/virtuosity_drums
+                박수: VCSL Claps (Versilian Community Sample Library) - github.com/sgossner/VCSL
+drum-lofi     : Virtuosity Drums의 lofi 마이크 + VCSL Claps
+drum-909      : 킥·스네어·클랩·림·탐은 코드로 합성한 909 계열 소리, 하이햇·심벌은 Virtuosity Drums
+bass-finger   : Growlybass (Karoryfer Samples) - github.com/sfzinstruments/karoryfer.growlybass
+신스·808 베이스는 샘플 없이 앱 안에서 합성

@@ -81,7 +81,11 @@ export class Engine {
 
   // 음원 하나를 풀어 저장 (트랙은 만들지 않음)
   async addSource(name, arrayBuffer) {
-    const buf = await this.ctx.decodeAudioData(arrayBuffer);
+    return this.addBuffer(name, await this.ctx.decodeAudioData(arrayBuffer));
+  }
+
+  // 이미 풀린 소리(AudioBuffer)를 저장 (미디로 구운 소리도 여기로). extra는 음원 항목에 덧붙일 값
+  async addBuffer(name, buf, extra) {
     const ch = Math.min(buf.numberOfChannels, 2);
     const frames = buf.length;
     let peak = 0;
@@ -102,7 +106,7 @@ export class Engine {
       await this.root.removeEntry(sid + '.pcm').catch(() => {});
       throw err;
     }
-    const src = { sid, idx: this.nextIdx++, name, frames, ch, scale, peaks, file: await fh.getFile(), fileId: sid, missing: false };
+    const src = { sid, idx: this.nextIdx++, name, frames, ch, scale, peaks, file: await fh.getFile(), fileId: sid, missing: false, ...extra };
     this.sources.set(sid, src);
     this.srcIdx.set(src.idx, src);
     return src;
@@ -110,7 +114,7 @@ export class Engine {
 
   // 아직 음원이 없는 자리 (프로젝트에서 열었을 때)
   addMissingSource(info) {
-    const src = { sid: info.sid, idx: this.nextIdx++, name: info.name, frames: info.frames, ch: info.ch, scale: info.scale || 1, peaks: null, file: null, missing: true };
+    const src = { sid: info.sid, idx: this.nextIdx++, name: info.name, frames: info.frames, ch: info.ch, scale: info.scale || 1, peaks: null, file: null, missing: true, midi: info.midi };
     this.sources.set(src.sid, src);
     this.srcIdx.set(src.idx, src);
     return src;

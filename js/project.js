@@ -45,7 +45,7 @@ export function serialize(E, name, id) {
   const used = new Set(E.tracks.flatMap((t) => t.clips.map((c) => c.sid)));
   return {
     app: 'DAW4', v: 2, id, name, savedAt: Date.now(),
-    sources: [...E.sources.values()].filter((s) => used.has(s.sid)).map((s) => ({ sid: s.sid, name: s.name, frames: s.frames, ch: s.ch, scale: s.scale })),
+    sources: [...E.sources.values()].filter((s) => used.has(s.sid)).map((s) => ({ sid: s.sid, name: s.name, frames: s.frames, ch: s.ch, scale: s.scale, ...(s.midi ? { midi: { kind: s.midi.kind, kit: s.midi.kit, b64: b64(s.midi.bytes) } } : {}) })),
     tracks: E.tracks.map(trackState),
     mm: structuredClone(E.mm), mode: E.mode, loop: { ...E.loop },
     ana: { rawLufs: E.ana.rawLufs ?? null, procLufs: E.ana.procLufs ?? null, refLufs: E.ana.refLufs ?? null, hasFit: !!E.ana.hasFit },
@@ -70,7 +70,7 @@ function upgrade(p) {
 // 저장된 값을 엔진에 넣는다. 트랙은 모두 만들고, 음원은 모두 "아직 없음"으로
 export function applyProject(E, p0) {
   const p = upgrade(p0);
-  for (const s of p.sources) E.addMissingSource(s);
+  for (const s of p.sources) E.addMissingSource(s.midi ? { ...s, midi: { kind: s.midi.kind, kit: s.midi.kit, bytes: unb64(s.midi.b64) } } : s);   // 미디 음원은 미디째 저장돼 있어 열 때 다시 굽는다
   for (const st of p.tracks) {
     const t = E.makeTrack(st.name, { id: st.id, cat: st.cat, color: st.color });
     Object.assign(t, {
