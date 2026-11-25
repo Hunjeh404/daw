@@ -1,6 +1,7 @@
 // 내보내기: 전체 믹스 한 파일, 또는 트랙별 파일을 zip 하나로
 import { renderRange } from './render.js';
 import { WavWriter, Mp3Writer, zip, download } from './filewrite.js';
+import { MixMeter } from './master-export.js';
 import { fadeBuffer } from './fades.js';
 
 const safe = (s) => (s || '').replace(/[\\/:*?"<>|]/g, '_').trim();
@@ -29,7 +30,15 @@ export async function exportAudio(E, opt, onProgress) {
   let clipped = 0;
   if (scope === 'mix') {
     const w = make(meta);
-    await renderFile(w, tracks, E.mm, onProgress);
+    if (E.singleWav) {
+      const meter = new MixMeter();
+      await renderFile(meter, tracks, E.mm, p => onProgress?.(p/2));
+      const gain = meter.gain();
+      await renderFile({ push(L, R) {
+        for (let i = 0; i < L.length; i++) { L[i] *= gain; R[i] *= gain; }
+        return w.push(L, R);
+      } }, tracks, E.mm, p => onProgress?.((1+p)/2));
+    } else await renderFile(w, tracks, E.mm, onProgress);
     const blob = await w.finish();
     clipped = w.clipped;
     download(blob, `${base}.${ext}`);

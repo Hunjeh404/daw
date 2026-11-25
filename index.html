@@ -203,7 +203,7 @@
     <button id="undo" aria-label="되돌리기" disabled><i class="ic ic-arrow-back-up"></i></button>
     <button id="redo" aria-label="다시 하기" disabled><i class="ic ic-arrow-forward-up"></i></button>
     <button id="addTrack"><i class="ic ic-plus"></i>빈 트랙</button>
-    <button id="guidedLoad">원곡 재분리</button>
+    <button id="guidedLoad">스템 분리</button>
     <div class="sp"></div>
     <button id="zout" aria-label="축소"><i class="ic ic-zoom-out"></i></button>
     <button id="zin" aria-label="확대"><i class="ic ic-zoom-in"></i></button>
@@ -212,7 +212,7 @@
   <div id="view">
     <div id="content">
       <div id="rulerBox" class="stick"><canvas id="ruler"></canvas></div>
-      <div id="tracks"><div class="empty stick">MP3, WAV 또는 압축 파일(zip)을 불러오세요</div></div>
+      <div id="tracks"><div class="empty stick">원곡 WAV 하나를 불러오면 보컬과 악기 6개 트랙으로 나눕니다.</div></div>
     </div>
   </div>
   <div id="panel" hidden>
@@ -258,10 +258,10 @@
 </nav>
 <div id="sheet" hidden><div class="sheet-box"><div class="sheet-h"><b>프로젝트</b><button id="sheetClose" aria-label="닫기"><i class="ic ic-x"></i></button></div><div id="sheetBody"></div></div></div>
 <dialog id="guidedDialog" aria-labelledby="guidedTitle"><form id="guidedForm">
-  <strong id="guidedTitle">원곡으로 스템 다시 나누기</strong>
-  <label>분리 전 원곡 WAV<input id="guidedRef" type="file" accept=".wav" required></label>
-  <label>수노 스템 ZIP<input id="guidedZip" type="file" accept=".zip" required></label>
-  <p>같은 버전의 원곡과 스템을 고르세요. 베이스·드럼·퍼커션 MIDI가 있으면 해당 악기들의 분리에 자동으로 반영합니다.</p>
+  <strong id="guidedTitle">원곡에서 스템 분리</strong>
+  <label>원곡 WAV<input id="guidedRef" type="file" accept=".wav" required></label>
+  <label>수노 스템 ZIP (선택)<input id="guidedZip" type="file" accept=".zip"></label>
+  <p>WAV 하나로 6개 스템을 분리합니다. 첫 실행에 모델 약 337 MiB를 받습니다. 같은 곡의 스템 ZIP을 추가하면 수노 스템 기반으로 재분리합니다.</p>
   <p id="guidedStatus" role="status"></p>
   <div><button id="guidedStart" type="submit">분리 시작</button> <button id="guidedClose" type="button">닫기</button></div>
 </form></dialog>

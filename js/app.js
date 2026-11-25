@@ -98,36 +98,52 @@ $('file').onchange = (e) => { const f = [...e.target.files]; e.target.value = ''
 $('relinkBtn').onclick = () => engine.guidedPending && !engine.missingSources.length ? retryGuided() : $('relinkFile').click();
 $('relinkFile').onchange = (e) => { const f = [...e.target.files]; e.target.value = ''; loadFiles(f, true); };
 
+let demixAbort;
 const dialog = $('guidedDialog');
 const guidedStatus = text => { $('guidedStatus').textContent = text; sub(text); };
 $('guidedLoad').onclick = () => {
   if (loading || busy) return;
-  if (engine.tracks.length) { flash('프로젝트 메뉴에서 새 프로젝트를 연 뒤 원곡 재분리를 선택하세요.'); return; }
+  if (engine.tracks.length) { flash('프로젝트 메뉴에서 새 프로젝트를 연 뒤 스템 분리를 선택하세요.'); return; }
   $('guidedStatus').textContent = ''; dialog.showModal();
 };
-$('guidedClose').onclick = () => dialog.close();
-dialog.oncancel = e => { if (loading) e.preventDefault(); };
+$('guidedClose').onclick = () => demixAbort ? demixAbort.abort() : dialog.close();
+dialog.oncancel = e => {
+  if (loading) { e.preventDefault(); demixAbort?.abort(); }
+};
 $('guidedForm').onsubmit = e => {
   e.preventDefault(); loadGuided($('guidedRef').files[0], $('guidedZip').files[0]);
 };
 
 async function loadGuided(ref, zip) {
-  if (loading || busy || !ref || !zip) return;
+  if (loading || busy || !ref) return;
   loading = engine.loading = true;
-  for (const input of $('guidedForm').elements) input.disabled = true;
+  if (!zip) {
+    demixAbort = new AbortController();
+    if (!dialog.open) dialog.showModal();
+    $('guidedClose').textContent = '분리 취소';
+  }
+  for (const input of $('guidedForm').elements) input.disabled = !!zip || input !== $('guidedClose');
   try {
     await cleared; await engine.init(); engine.stop();
-    await importGuided(engine, ref, zip, guidedStatus);
+    if (zip) await importGuided(engine, ref, zip, guidedStatus);
+    else {
+      const { importDemix } = await import('./demix.js');
+      await importDemix(engine, ref, guidedStatus, demixAbort.signal);
+    }
     for (const t of engine.tracks) renderTrack(t);
     orderRows(); fitZoom(); afterChange(); renderCompare(); paintRelink();
+    loading = engine.loading = false; refreshTabs();
     dialog.close(); $('guidedForm').reset();
     document.querySelector('nav [data-tab="mix"]').click();
     flash('스템 준비 완료');
   } catch (err) {
+    if (demixAbort?.signal.aborted) { dialog.close(); sub('스템 분리를 취소했습니다.'); return; }
     guidedStatus(err.name === 'QuotaExceededError' ? '브라우저 저장공간이 부족합니다. 공간을 확보한 뒤 다시 시도하세요.' : err.message);
     if (!dialog.open) dialog.showModal();
   } finally {
     loading = engine.loading = false;
+    demixAbort = null;
+    $('guidedClose').textContent = '닫기';
     for (const input of $('guidedForm').elements) input.disabled = false;
     refreshTabs();
   }
@@ -144,6 +160,7 @@ async function retryGuided() {
 async function loadFiles(files, relink) {
   if (!files.length || loading || busy) return;
   const ref = files.find(f => /\.wav$/i.test(f.name)), zip = files.find(f => /\.zip$/i.test(f.name));
+  if (files.length === 1 && ref && !relink && !engine.tracks.length && !engine.guided) return loadGuided(ref);
   if (files.length === 2 && !relink && !engine.tracks.length && ref && zip) return loadGuided(ref, zip);
   await cleared;
   await engine.init();
@@ -721,7 +738,7 @@ $('aDelTrack').onclick = async () => {
   if (sel && sel.t === t) sel = null;
   curT = null;
   if (wasRef && engine.mode === 'ref') engine.mode = 'apply';
-  if (!engine.tracks.length) tracksEl.innerHTML = '<div class="empty stick">MP3, WAV 또는 압축 파일(zip)을 불러오세요</div>';
+  if (!engine.tracks.length) tracksEl.innerHTML = '<div class="empty stick">원곡 WAV 하나를 불러오면 보컬과 악기 6개 트랙으로 나눕니다.</div>';
   mix.select(null);
   engine.applyAll();
   afterChange(); renderCompare(); paintRelink(); refreshTabs();
@@ -782,7 +799,7 @@ async function clearAllUI() {
   await cleared;
   await engine.init();
   await engine.clearAll();
-  tracksEl.innerHTML = '<div class="empty stick">MP3, WAV 또는 압축 파일(zip)을 불러오세요</div>';
+  tracksEl.innerHTML = '<div class="empty stick">원곡 WAV 하나를 불러오면 보컬과 악기 6개 트랙으로 나눕니다.</div>';
   sel = null; curT = null; clipBoard = null; undoStack = []; redoStack = []; updateUndoBtns();
   mix.select(null);
   updatePlayBtn(); renderPanel(); renderCompare(); paintRelink(); layout(); refreshTabs();
