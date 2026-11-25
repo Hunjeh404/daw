@@ -43,9 +43,11 @@ export function serialize(E, name, id) {
   const meta = E.meta || {};
   const exp = E.exp || {};
   const used = new Set(E.tracks.flatMap((t) => t.clips.map((c) => c.sid)));
+  for (const sid of E.guidedIds) used.add(sid);
   return {
+    guided: E.guided ? structuredClone(E.guided) : undefined,
     app: 'DAW4', v: 2, id, name, savedAt: Date.now(),
-    sources: [...E.sources.values()].filter((s) => used.has(s.sid)).map((s) => ({ sid: s.sid, name: s.name, frames: s.frames, ch: s.ch, scale: s.scale, ...(s.midi ? { midi: { kind: s.midi.kind, kit: s.midi.kit, b64: b64(s.midi.bytes) } } : {}) })),
+    sources: [...E.sources.values()].filter((s) => used.has(s.sid)).map((s) => ({ sid: s.sid, name: s.name, frames: s.frames, ch: s.ch, scale: s.scale, float: s.float || undefined, ...(s.midi ? { midi: { kind: s.midi.kind, kit: s.midi.kit, b64: b64(s.midi.bytes) } } : {}) })),
     tracks: E.tracks.map(trackState),
     mm: structuredClone(E.mm), mode: E.mode, loop: { ...E.loop },
     ana: { rawLufs: E.ana.rawLufs ?? null, procLufs: E.ana.procLufs ?? null, refLufs: E.ana.refLufs ?? null, hasFit: !!E.ana.hasFit },
@@ -70,6 +72,7 @@ function upgrade(p) {
 // 저장된 값을 엔진에 넣는다. 트랙은 모두 만들고, 음원은 모두 "아직 없음"으로
 export function applyProject(E, p0) {
   const p = upgrade(p0);
+  E.guided = p.guided ? structuredClone(p.guided) : null;
   for (const s of p.sources) E.addMissingSource(s.midi ? { ...s, midi: { kind: s.midi.kind, kit: s.midi.kit, bytes: unb64(s.midi.b64) } } : s);   // 미디 음원은 미디째 저장돼 있어 열 때 다시 굽는다
   for (const st of p.tracks) {
     const t = E.makeTrack(st.name, { id: st.id, cat: st.cat, color: st.color });
@@ -80,7 +83,7 @@ export function applyProject(E, p0) {
     E.updateSegs(t);
   }
   Object.assign(E.mm, structuredClone(p.mm));
-  E.mode = p.mode === 'ref' && !p.tracks.some((t) => t.mix.ref) ? 'apply' : p.mode || 'apply';
+  E.mode = p.mode === 'ref' && !E.guided && !p.tracks.some((t) => t.mix.ref) ? 'apply' : p.mode || 'apply';
   E.loop = { ...p.loop };
   E.ana = { ...p.ana };
   if (E.exp) Object.assign(E.exp, { ...p.exp, off: new Set(p.exp.off || []), b: p.exp.b ?? null, tail: p.exp.tail ?? 1, tailAuto: p.exp.tailAuto ?? true });
@@ -97,7 +100,7 @@ export function applyProject(E, p0) {
 export function matchSource(E, src) {
   const holes = [...E.sources.values()].filter((s) => s.missing && s.frames === src.frames && s.ch === src.ch);
   if (!holes.length) return null;
-  return holes.find((s) => s.name === src.name) || holes[0];
+  return holes.find((s) => s.name === src.name) || (E.guided ? null : holes[0]);
 }
 
 export function parseProjectFile(text) {

@@ -31,6 +31,7 @@ export function initProjects({ engine: E, flash, clearAll, opened, isBusy }) {
       download(new Blob([JSON.stringify(p)], { type: 'application/json' }), `${safe(p.name)}.daw4.json`);
     });
     mk('새 프로젝트', async () => {
+      if (isBusy()) { flash('진행 중인 작업이 끝난 뒤에 새로 시작하세요.'); return; }
       if (E.tracks.length && !confirm('지금 작업 중인 내용은 저장하지 않으면 사라집니다. 새로 시작할까요?')) return;
       await clearAll();
       E.projectId = null; E.projectName = '';

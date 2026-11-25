@@ -9,6 +9,7 @@ const SR = 44100;
 const PRE_DEFAULT = 2 * SR, CHUNK = 12 * SR;
 
 export async function renderRange(E, a, b, onChunk, opt = {}) {
+  if (E.guidedPending) throw Error('원곡과 스템을 다시 연결하세요.');
   const mm = opt.mm || E.mm;
   const live = E.tracks.filter((t) => !t.mix.ref);
   const anySolo = live.some((t) => t.solo);
@@ -27,6 +28,16 @@ export async function renderRange(E, a, b, onChunk, opt = {}) {
     await ctx.audioWorklet.addModule('js/fx-worklet.js');
     const M = buildMaster(ctx, ctx.destination, mm);
     applyMaster(M, mm, false, ctx, 0, true);
+    const fullMix = !opt.isolated && (opt.only ? use.length === live.length : !anySolo && use.length > 0);
+    if (E.guided && fullMix) {
+      const view = E.srcView({ segs: E.bedSegments() });
+      const [l, r] = await readWindow(view, w0, c1);
+      if (opt.inputFade) fadeBuffer(l, r, w0, opt.inputFade);
+      const buffer = ctx.createBuffer(2, l.length, SR);
+      buffer.copyToChannel(l, 0); buffer.copyToChannel(r, 1);
+      const bed = ctx.createBufferSource();
+      bed.buffer = buffer; bed.connect(M.sum); bed.start();
+    }
     for (const t of use) {
       const ref = t.ana?.lufs ?? -20;
       const fxc = buildTrackChain(ctx, trackFxParams(t.mix, false, ref));

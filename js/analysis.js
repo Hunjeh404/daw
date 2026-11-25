@@ -43,13 +43,11 @@ export function measureTracks(E, onProgress) {
       ok();
     };
     w.onerror = (e) => { w.terminate(); fail(e); };
-    w.postMessage({
-      dur: E.duration,
-      tracks: E.tracks.map((t) => ({
-        ...E.srcView(t), ref: t.mix.ref,
-        live: !t.mix.ref && !t.muted && (!anySolo || t.solo),
-      })),
-    });
+    const tracks = E.tracks.map(t => ({
+      ...E.srcView(t), ref: t.mix.ref, live: !t.mix.ref && !t.muted && (!anySolo || t.solo),
+    }));
+    if (E.guided) tracks.push({ ...E.srcView({ segs: E.bedSegments('ref') }), ref: true, live: false });
+    w.postMessage({ dur: E.duration, tracks });
   });
 }
 
@@ -191,7 +189,7 @@ export async function autoMaster(E, onProgress) {
   mm.eq = { on: false, low: 0, mid: 0, high: 0 };
   mm.tone = { amt: 0.7, ...mm.tone, on: false };
   mm.lim = { ...mm.lim, on: true, gainDb: 0 };
-  const refT = E.tracks.find((t) => t.mix.ref);
+  const refT = E.guided ? { segs:E.bedSegments('ref') } : E.tracks.find((t) => t.mix.ref);
   const spec = refT ? new ToneSpec() : null;
 
   const PASSES = 4;

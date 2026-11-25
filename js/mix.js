@@ -100,7 +100,7 @@ export function initMix({ engine: E, pushUndo, flash, sub, onChange, setBusy, un
     u.className = 'undo-btn'; u.setAttribute('aria-label', '되돌리기'); u.innerHTML = '<i class="ic ic-arrow-back-up"></i>'; u.onclick = undo;
     r.className = 'redo-btn'; r.setAttribute('aria-label', '다시 하기'); r.innerHTML = '<i class="ic ic-arrow-forward-up"></i>'; r.onclick = redo;
     u.disabled = document.getElementById('undo').disabled; r.disabled = document.getElementById('redo').disabled;
-    top.append(u, r, segmented([['track', '트랙 믹싱'], ['master', '전체 마스터']], view, (v) => { view = v; render(); }));
+    top.append(u, r, segmented([['track', '트랙 믹싱'], ['master', '전체 마스터']], view, (v) => { if (E.monitor) { E.monitor = null; changed(); } view = v; render(); }));
   }
 
   function autoRow() {
@@ -162,22 +162,6 @@ export function initMix({ engine: E, pushUndo, flash, sub, onChange, setBusy, un
   }
 
   // 트랙과 마스터를 한 번에 자동으로 (올릴 때, 원곡 지정할 때)
-  async function runAuto(list, why) {
-    if (busy || !list.length) return;
-    busy = true; setBusy(true); render();
-    try {
-      E.stop(); onChange && onChange('stop');
-      await measure(why);
-      pushUndo();
-      for (const t of list) suggestTrack(E, t);
-      applySpread(E, list);
-      await autoMaster(E, (p) => sub(`${why}: 마스터 계산 ${Math.round(p * 100)}%`));
-      changed();
-      flash(E.hasRef ? '원곡 기준으로 믹싱·마스터를 잡았습니다' : '믹싱·마스터를 자동으로 잡았습니다');
-    } catch (e) { flash('자동 설정을 하지 못했습니다: ' + e.message); }
-    busy = false; setBusy(false); render();
-  }
-
   async function runFit() {
     if (busy) return;
     busy = true; setBusy(true); render();
@@ -208,6 +192,45 @@ export function initMix({ engine: E, pushUndo, flash, sub, onChange, setBusy, un
     busy = false; setBusy(false); render();
   }
 
+  function separationControls(t) {
+    const src = E.sources.get(t.home);
+    if (!src?.variants) return;
+    const card = document.createElement('div');
+    card.className = 'guided-controls';
+    const modes = [['suno','수노 스템'], ['repair','의심 구간 보정'], ['wav','원곡 재분리']];
+    if (src.variants.midi) modes.push(['midi','MIDI 보조']);
+    const setVersions = (tracks, version) => {
+      pushUndo();
+      for (const track of tracks) { track.mix.version = version; track.ana = null; }
+      E.ana = {};
+      for (const track of E.tracks) E.updateSegs(track);
+      if (E.monitor?.type === 'difference' && version === 'suno') E.monitor = { type:'source', track:t.id };
+      E.mode = 'apply'; changed(); render();
+    };
+    const title = document.createElement('strong');
+    title.textContent = '스템 소스';
+    const version = t.mix.version || 'repair';
+    card.append(title, segmented(modes, version, v => setVersions([t], v)));
+    const copy = document.createElement('button');
+    copy.textContent = '이 방식을 전체 스템에 적용';
+    copy.onclick = () => setVersions(E.tracks.filter(x => E.sources.get(x.home)?.variants), version);
+    const note = document.createElement('small');
+    const db = E.sources.get(src.variants[version])?.changeDb;
+    note.textContent = db == null ? '수노에서 받은 WAV 그대로입니다.' :
+      '수노 스템 대비 달라진 신호의 RMS · '+(Number.isFinite(db) ? db.toFixed(1)+' dB' : '무음')+' (곡 전체)';
+    const listen = [['mix','전체 믹스'],['source','이 스템만']];
+    if (version !== 'suno') listen.push(['difference','제거된 소리만']);
+    listen.push(['wet','잔향만']);
+    const monitor = E.monitor?.track === t.id ? E.monitor.type : 'mix';
+    if (!E.commonLayout()) note.textContent += ' · 클립 배치가 달라 현재 믹스는 편집한 스템 합으로 재생합니다.';
+    card.append(note, copy, segmented(listen, monitor, type => {
+      E.monitor = type === 'mix' ? null : {type,track:t.id};
+      E.mode = 'apply'; changed(); render();
+      if (type === 'wet' && (!t.mix.send || E.mm.verb.on === false)) flash('리버브 전송량을 올리고 마스터 리버브를 켜세요.');
+    }));
+    body.append(card);
+  }
+
   // ---------- 트랙 믹싱 ----------
   function renderTrack() {
     const chips = document.createElement('div');
@@ -218,12 +241,13 @@ export function initMix({ engine: E, pushUndo, flash, sub, onChange, setBusy, un
       c.innerHTML = `<span class="dot"></span><span></span>`;
       c.firstChild.style.background = t.color;
       c.lastChild.textContent = t.name + (t.mix.ref ? ' (원곡)' : '');
-      c.onclick = () => { cur = t; render(); };
+      c.onclick = () => { if (cur !== t && E.monitor) { E.monitor = null; E.applyAll(); } cur = t; render(); };
       chips.appendChild(c);
     }
     body.appendChild(chips);
     { const r = autoRow(); body.append(r, r._spread); }
     const t = cur, m = t.mix;
+    separationControls(t);
     body.appendChild(section('t-basic', '기본', null, (b) => {
       b.appendChild(slider({ label: '볼륨', min: -24, max: 12, step: 0.5, unit: 'dB', get: () => t.volumeDb, show: (v) => sgn(v), set: (v) => { t.volumeDb = v; changed(); } }));
       b.appendChild(slider({ label: '패닝', min: -1, max: 1, step: 0.05, get: () => m.pan, show: (v) => (Math.abs(v) < 0.01 ? '가운데' : (v < 0 ? '왼 ' : '오 ') + pct(Math.abs(v))), set: (v) => { m.pan = v; changed(); } }));
@@ -234,6 +258,7 @@ export function initMix({ engine: E, pushUndo, flash, sub, onChange, setBusy, un
       fr.innerHTML = `<span class="grow">오른쪽 채널 극성 반전<small>${t.ana && t.ana.corr != null ? '좌우 상관 ' + t.ana.corr.toFixed(2) + (t.ana.corr < -0.3 ? ' · 모노로 들을 때 소리가 약해질 수 있습니다' : '') : '자동 분석 때 확인합니다'}</small></span>`;
       fr.appendChild(toggle(!!m.flip, (v) => { m.flip = v; changed(); }, '오른쪽 채널 극성 반전'));
       b.appendChild(fr);
+      if (E.guided) return;
       const r = document.createElement('div');
       r.className = 'row';
       r.innerHTML = `<span class="grow">원곡(기준)으로 쓰기<small>믹스에서 빼고 비교용으로만 들립니다</small></span>`;
@@ -247,7 +272,6 @@ export function initMix({ engine: E, pushUndo, flash, sub, onChange, setBusy, un
         m.ref = v; E.ana.refLufs = null; E.ana.procLufs = null;
         if (!E.hasRef && E.mode === 'ref') E.mode = 'apply';
         changed(); render();
-        if (v) runAuto(E.tracks.filter((x) => !x.mix.ref), '원곡 기준 자동 설정');   // 원곡을 지정하면 원곡 기준으로 다시 잡는다
       }, '원곡으로 쓰기'));
       b.appendChild(r);
     }));
@@ -345,6 +369,7 @@ export function initMix({ engine: E, pushUndo, flash, sub, onChange, setBusy, un
   }
 
   function render() {
+    if (E.guidedPending && !E.loading) { renderTop(); body.textContent = '원곡과 스템을 다시 연결하세요.'; return; }
     if (E.loading) { renderTop(); body.innerHTML = '<div class="soon">음원을 불러오는 중입니다. 다 불러온 뒤에 열립니다</div>'; return; }
     renderTop();
     const y = body.scrollTop;
@@ -389,5 +414,5 @@ export function initMix({ engine: E, pushUndo, flash, sub, onChange, setBusy, un
   }
   requestAnimationFrame(tickMeters);
 
-  return { render, select: (t) => { cur = t; }, autoNew: (list) => runAuto(list, '자동 믹싱') };
+  return { render, select: (t) => { cur = t; } };
 }

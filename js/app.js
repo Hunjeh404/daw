@@ -6,8 +6,8 @@ import { initMix } from './mix.js';
 import { initExport } from './exportui.js';
 import { initProjects } from './projectui.js';
 import { matchSource } from './project.js';
-import { parseMidi, midiKind } from './midi.js';
-import { renderMidi, defaultKit, KITS, kitName } from './instrument.js';
+import { importGuided, rebuildGuided } from './guided.js';
+import { renderMidi } from './instrument.js';
 
 const engine = new Engine();
 const $ = (id) => document.getElementById(id);
@@ -17,6 +17,7 @@ const DPR = () => window.devicePixelRatio || 1;
 let loading = false;
 let busy = false;              // 자동 분석 중
 let pps = 20;                 // 1초당 픽셀
+let fitPending = false;
 let laneW = 300;              // 파형 칸 너비(CSS px)
 let sel = null;               // { t, c }
 let curT = null;              // 고른 트랙 (붙여넣기 대상)
@@ -37,8 +38,7 @@ const fmt = (frames, tenth) => {
   return tenth ? `${m}:${r.toFixed(1).padStart(4, '0')}` : `${m}:${String(Math.floor(r)).padStart(2, '0')}`;
 };
 const isAudio = (n) => /\.(mp3|wav)$/i.test(n) && !/(^|\/)(__MACOSX\/|\._)/.test(n);
-const isMidi = (n) => /\.midi?$/i.test(n) && !/(^|\/)(__MACOSX\/|\._)/.test(n);
-const baseName = (n) => n.split('/').pop().replace(/\.(mp3|wav|midi?)$/i, '');
+const baseName = (n) => n.split('/').pop().replace(/\.(mp3|wav|midi?)$/i, '').normalize('NFC');
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 let subMsg = '';
 function sub(text) { subMsg = text; $('sub').textContent = text; }
@@ -57,10 +57,10 @@ function restore(s) {
     const x = s.tracks.find((y) => y.id === t.id);
     if (!x) { t.clips = []; engine.updateSegs(t); return; }   // 그 뒤에 만든 빈 트랙
     Object.assign(t,{ clips: x.clips.map((c) => ({ ...c })), xfade: x.xfade, volumeDb: x.volumeDb, muted: x.muted, solo: x.solo, mix: structuredClone(x.mix) });
-    engine.updateSegs(t);
   });
+  for (const t of engine.tracks) engine.updateSegs(t);
   engine.mm = structuredClone(s.mm);
-  if (!engine.hasRef && engine.mode === 'ref') engine.mode = 'apply';
+  if (!engine.guided && !engine.hasRef && engine.mode === 'ref') engine.mode = 'apply';
   engine.applyAll();
   renderCompare();
   if (document.getElementById('tab-mix').classList.contains('show')) mix.render();
@@ -95,11 +95,55 @@ function afterChange() {
 // ---------- 불러오기 ----------
 $('load').onclick = () => $('file').click();
 $('file').onchange = (e) => { const f = [...e.target.files]; e.target.value = ''; loadFiles(f, false); };
-$('relinkBtn').onclick = () => $('relinkFile').click();
+$('relinkBtn').onclick = () => engine.guidedPending && !engine.missingSources.length ? retryGuided() : $('relinkFile').click();
 $('relinkFile').onchange = (e) => { const f = [...e.target.files]; e.target.value = ''; loadFiles(f, true); };
 
+const dialog = $('guidedDialog');
+const guidedStatus = text => { $('guidedStatus').textContent = text; sub(text); };
+$('guidedLoad').onclick = () => {
+  if (loading || busy) return;
+  if (engine.tracks.length) { flash('프로젝트 메뉴에서 새 프로젝트를 연 뒤 원곡 재분리를 선택하세요.'); return; }
+  $('guidedStatus').textContent = ''; dialog.showModal();
+};
+$('guidedClose').onclick = () => dialog.close();
+dialog.oncancel = e => { if (loading) e.preventDefault(); };
+$('guidedForm').onsubmit = e => {
+  e.preventDefault(); loadGuided($('guidedRef').files[0], $('guidedZip').files[0], $('guidedMidi').checked);
+};
+
+async function loadGuided(ref, zip, useMidi = true) {
+  if (loading || busy || !ref || !zip) return;
+  loading = engine.loading = true;
+  for (const input of $('guidedForm').elements) input.disabled = true;
+  try {
+    await cleared; await engine.init(); engine.stop();
+    await importGuided(engine, ref, zip, guidedStatus, useMidi);
+    for (const t of engine.tracks) renderTrack(t);
+    orderRows(); fitZoom(); afterChange(); renderCompare(); paintRelink();
+    dialog.close(); $('guidedForm').reset();
+    flash('분리 완료 · 믹싱 탭에서 트랙별 소리를 비교하세요.');
+  } catch (err) {
+    guidedStatus(err.name === 'QuotaExceededError' ? '브라우저 저장공간이 부족합니다. 공간을 확보한 뒤 다시 시도하세요.' : err.message);
+    if (!dialog.open) dialog.showModal();
+  } finally {
+    loading = engine.loading = false;
+    for (const input of $('guidedForm').elements) input.disabled = false;
+    refreshTabs();
+  }
+}
+
+async function retryGuided() {
+  if (loading || busy) return;
+  loading = engine.loading = true; refreshTabs();
+  try { await rebuildGuided(engine, sub); }
+  catch (err) { flash(err.message); }
+  finally { loading = engine.loading = false; paintRelink(); refreshTabs(); renderCompare(); }
+}
+
 async function loadFiles(files, relink) {
-  if (!files.length || loading) return;
+  if (!files.length || loading || busy) return;
+  const ref = files.find(f => /\.wav$/i.test(f.name)), zip = files.find(f => /\.zip$/i.test(f.name));
+  if (files.length === 2 && !relink && !engine.tracks.length && ref && zip) return loadGuided(ref, zip);
   await cleared;
   await engine.init();
   engine.stop();
@@ -112,20 +156,17 @@ async function loadFiles(files, relink) {
         const entries = await listZip(f);
         for (const en of entries) {
           if (isAudio(en.name)) jobs.push({ name: baseName(en.name), wav: /\.wav$/i.test(en.name), get: () => readEntry(f, en) });
-          else if (isMidi(en.name) && !relink) jobs.push({ name: baseName(en.name), midi: true, get: () => readEntry(f, en) });
         }
       } catch (err) { flash(f.name + ': ' + err.message); return; }
     } else if (isAudio(f.name)) {
       jobs.push({ name: baseName(f.name), wav: /\.wav$/i.test(f.name), get: () => f.arrayBuffer() });
-    } else if (isMidi(f.name) && !relink) {
-      jobs.push({ name: baseName(f.name), midi: true, get: () => f.arrayBuffer() });
     }
   }
-  if (!jobs.length) { flash('불러올 MP3·WAV·미디가 없습니다'); return; }
+  if (!jobs.length) { flash('WAV 또는 MP3가 필요합니다. MIDI는 원곡 재분리에서 스템과 함께 사용합니다.'); return; }
   // 같은 이름이 여러 번 들어 있으면 (zip 안에 WAV·MP3가 함께 있거나 폴더가 겹칠 때) 하나만, WAV를 먼저
   {
     const pick = new Map();
-    for (const j of jobs) { const k = (j.midi ? 'm:' : '') + j.name; const o = pick.get(k); if (!o || (j.wav && !o.wav)) pick.set(k, j); }
+    for (const j of jobs) { const k = j.name; const o = pick.get(k); if (!o || (j.wav && !o.wav)) pick.set(k, j); }
     jobs.splice(0, jobs.length, ...pick.values());
   }
   jobs.sort((a, b) => a.name.localeCompare(b.name, 'ko', { numeric: true }));
@@ -137,34 +178,14 @@ async function loadFiles(files, relink) {
   }
 
   const first = !engine.tracks.length;
-  const added = [], wrong = [], midiSkip = [];
-  let linked = 0, midiAdded = 0, doubles = 0;
+  const wrong = [];
+  let linked = 0;
   loading = true; engine.loading = true; refreshTabs();
   for (let i = 0; i < jobs.length; i++) {
     if (relink && !engine.missingSources.length) break;
     sub(`${relink ? '연결하는' : '불러오는'} 중 ${i + 1}/${jobs.length}: ${jobs[i].name}`);
     try {
-      if (jobs[i].midi) {
-        const bytes = new Uint8Array(await jobs[i].get());
-        const pm = parseMidi(bytes);
-        const kind = midiKind(jobs[i].name, pm);
-        if (!kind) { midiSkip.push(jobs[i].name); continue; }
-        const kit = defaultKit(kind, pm);
-        sub(`미디를 ${kitName(kit)} 소리로 만드는 중 ${i + 1}/${jobs.length}: ${jobs[i].name}`);
-        const r = await renderMidi(engine.ctx, bytes, kind, kit, SR);
-        doubles += r.dropped;
-        const src = await engine.addBuffer(jobs[i].name, r.buf, { midi: { bytes, kind, kit } });
-        const t = engine.makeTrack(src.name + ' 미디');
-        t.home = src.sid;
-        t.clips = [{ id: newClipId(), sid: src.sid, start: 0, src: 0, len: src.frames, fi: 0, fo: 0 }];
-        t.color = colorFor(t.name);
-        engine.updateSegs(t);
-        renderTrack(t);
-        added.push(t);
-        midiAdded++;
-        continue;
-      }
-      const src = await engine.addSource(jobs[i].name, await jobs[i].get());
+      const src = await engine.addSource(jobs[i].name, await jobs[i].get(), engine.guided ? { float: true } : undefined);
       const hole = matchSource(engine, src);
       if (hole) {
         engine.fillSource(hole, src);
@@ -179,7 +200,6 @@ async function loadFiles(files, relink) {
         t.color = colorFor(t.name);
         engine.updateSegs(t);
         renderTrack(t);
-        added.push(t);
       }
       await new Promise((r) => setTimeout(r, 50));   // 다음 파일 전에 메모리 정리할 틈
     } catch (err) {
@@ -189,6 +209,10 @@ async function loadFiles(files, relink) {
       if (err.name === 'QuotaExceededError') break;
     }
   }
+  if (engine.guidedPending && !engine.missingSources.length) {
+    try { await rebuildGuided(engine, sub); } catch (err) { flash(err.message); }
+  }
+  if (first) engine.mm.low.on = engine.mm.space.on = engine.mm.lim.on = false;
   loading = false; engine.loading = false;
   orderRows();
   engine.applyAll();
@@ -201,47 +225,7 @@ async function loadFiles(files, relink) {
     const left = engine.missingSources.length;
     flash(`음원 ${linked}개 연결` + (wrong.length ? ` · 프로젝트에 없는 음원: ${wrong.join(', ')}` : '') + (left ? ` · 아직 연결 안 된 음원 ${left}개` : ''));
   }
-  // 처음 올릴 때, 또는 원곡이 있는 상태에서 스템을 더 올릴 때 자동으로 믹싱·마스터를 잡는다 (연결은 저장된 설정 그대로)
-  if (added.length && (first || engine.hasRef)) await mix.autoNew(added);
-  if (midiAdded || midiSkip.length) {
-    flash((midiAdded ? `미디 트랙 ${midiAdded}개 추가` : '추가한 미디 트랙 없음')
-      + (doubles ? ` · 겹친 타격 ${doubles}개 정리` : '')
-      + (midiSkip.length ? ` · 드럼·베이스가 아닌 미디 ${midiSkip.length}개는 건너뜀` : ''));
-  }
   showStats();
-}
-
-// ---------- 미디 트랙 ----------
-// 트랙이 쓰는 미디 음원 (하나일 때만)
-function midiSrcOf(t) {
-  const sids = new Set(t.clips.map((c) => c.sid));
-  const ms = [...sids].map((id) => engine.sources.get(id)).filter((s) => s && s.midi);
-  return ms.length === 1 && sids.size === 1 ? ms[0] : null;
-}
-
-// 키트를 바꾸면 같은 길이로 다시 구워 음원만 바꿔 끼운다 (클립 자리·페이드는 그대로)
-async function changeKit(t, src, kit) {
-  if (loading || busy) { flash('지금 하는 작업이 끝난 뒤에 바꾸세요'); renderPanel(); return; }
-  loading = true; engine.loading = true; refreshTabs();
-  engine.stop(); updatePlayBtn();
-  try {
-    sub(`${kitName(kit)} 소리로 다시 만드는 중: ${src.name}`);
-    const r = await renderMidi(engine.ctx, src.midi.bytes, src.midi.kind, kit, SR);
-    const ns = await engine.addBuffer(src.name, r.buf, { midi: { ...src.midi, kit } });
-    const swap = (clips) => { for (const c of clips) if (c.sid === src.sid) c.sid = ns.sid; };
-    for (const x of engine.tracks) { swap(x.clips); if (x.home === src.sid) x.home = ns.sid; }
-    for (const snap of [...undoStack, ...redoStack]) for (const x of snap.tracks) swap(x.clips);
-    if (clipBoard && clipBoard.sid === src.sid) clipBoard.sid = ns.sid;
-    await engine.removeSource(src);
-    for (const x of engine.tracks) engine.updateSegs(x);
-    engine.applyAll();
-    flash(`${kitName(kit)} 소리로 바꿨습니다`);
-  } catch (err) {
-    flash('키트를 바꾸지 못했습니다: ' + err.message);
-  }
-  loading = false; engine.loading = false; refreshTabs();
-  showStats();
-  afterChange();
 }
 
 // 프로젝트를 열 때: 미디 음원은 저장된 미디로 다시 굽는다
@@ -267,8 +251,10 @@ function orderRows() {
 }
 function paintRelink() {
   const n = engine.missingSources.length;
-  $('relinkBar').hidden = !n;
-  $('relinkText').textContent = `연결 안 된 음원 ${n}개 · zip이나 파일을 고르면 이름과 길이로 맞춰 연결합니다`;
+  const retry = engine.guidedPending && !n;
+  $('relinkBar').hidden = !n && !retry;
+  $('relinkBtn').textContent = retry ? '재분리 다시 시도' : '음원 연결';
+  $('relinkText').textContent = retry ? '원곡 재분리가 필요합니다.' : `연결 안 된 음원 ${n}개 · zip이나 파일을 고르면 이름과 길이로 맞춰 연결합니다`;
   layout();
 }
 
@@ -309,6 +295,7 @@ function updateHead(t) {
 // ---------- 배치·확대 ----------
 function layout() {
   const vw = view.clientWidth;
+  if (!vw) return;
   const durS = Math.max(engine.duration / SR, 1);
   content.style.width = Math.max(vw, Math.ceil(durS * pps + vw * 0.5)) + 'px';
   $('rulerBox').style.width = vw + 'px';
@@ -326,6 +313,8 @@ function layout() {
 window.addEventListener('resize', layout);
 
 function fitZoom() {
+  fitPending = !view.clientWidth;
+  if (fitPending) return;
   layout();
   pps = laneW / Math.max(engine.duration / SR, 1);
   view.scrollLeft = 0;
@@ -429,7 +418,7 @@ function drawLane(t) {
     const x0 = (cl.start / SR) * pps - sl, x1 = ((cl.start + cl.len) / SR) * pps - sl;
     if (x1 < 0 || x0 > cw) continue;
     const isSel = sel && sel.c === cl;
-    const srcObj = engine.sources.get(cl.sid);
+    const srcObj = engine.sources.get(engine.versionSid(cl.sid));
     if (!srcObj || srcObj.missing) {
       // 음원이 아직 없는 조각
       g.fillStyle = 'rgba(138,143,153,.12)';
@@ -641,14 +630,6 @@ function renderPanel() {
 function renderVol(t) {
   const vb = $('volBox');
   vb.innerHTML = '';
-  const ms = midiSrcOf(t);
-  if (ms) {
-    const row = document.createElement('div');
-    row.className = 'row kit';
-    row.innerHTML = '<label>키트</label>';
-    row.append(segmented(KITS[ms.midi.kind], ms.midi.kit, (k) => { if (k !== ms.midi.kit) changeKit(t, ms, k); }));
-    vb.append(row);
-  }
   vb.append(slider({
     label: '트랙 볼륨', min: -24, max: 12, step: 0.1, unit: 'dB',
     get: () => t.volumeDb, show: (v) => (v > 0 ? '+' : '') + v.toFixed(1),
@@ -843,11 +824,12 @@ function renderCompare() {
   const box = $('compare');
   box.innerHTML = '';
   if (!engine.tracks.length) return;
-  const opts = [['raw', '원본'], ['apply', '적용']];
-  if (engine.hasRef) opts.push(['ref', '원곡']);
+  const opts = engine.guided ? [['apply', '믹스'], ['raw', '스템 합'], ['ref', '원곡']] : [['raw', '원본'], ['apply', '적용']];
+  if (engine.hasRef && !engine.guided) opts.push(['ref', '원곡']);
   box.appendChild(segmented(opts, engine.mode, (m) => {
     engine.setMode(m);
-    if (m !== 'apply' && engine.ana.procLufs == null) flash('마스터 자동 분석 전이라 비교 음량이 맞춰지지 않았습니다');
+    if (engine.guided) refreshTabs();
+    if (!engine.guided && m !== 'apply' && engine.ana.procLufs == null) flash('마스터 자동 분석 전이라 비교 음량이 맞춰지지 않았습니다');
   }));
 }
 
@@ -862,10 +844,11 @@ for (const b of document.querySelectorAll('nav button')) {
   b.onclick = () => {
     for (const x of document.querySelectorAll('nav button')) x.classList.toggle('on', x === b);
     for (const s of document.querySelectorAll('.tab')) s.classList.toggle('show', s.id === 'tab-' + b.dataset.tab);
+    if (engine.monitor && b.dataset.tab !== 'mix') { engine.monitor = null; engine.applyAll(); }
     if (b.dataset.tab === 'mix') { if (sel) mix.select(sel.t); mix.render(); }
     if (b.dataset.tab === 'export') exp.render();
     exp.setActive(b.dataset.tab === 'export');
-    layout();
+    if (fitPending && view.clientWidth) fitZoom(); else layout();
   };
 }
 
