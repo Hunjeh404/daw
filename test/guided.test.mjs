@@ -15,7 +15,7 @@ const mix = a.map((x,i) => x + b[i]);
 const guides = [a.map((x,i) => x+extra[i]+cancel[i]), b.map((x,i) => x-cancel[i])];
 const source = samples => ({ file:new Blob([samples]), frames:samples.length/2, ch:2, float:true, scale:1 });
 
-async function run(sources, parts, automatic = false) {
+async function run(sources, parts, automatic = false, stereoWiener = automatic) {
   const files = new Map();
   // Same worker entry and byte offsets as OPFS, with in-memory file handles for the test.
   const root = {
@@ -33,7 +33,7 @@ async function run(sources, parts, automatic = false) {
   globalThis.self = {};
   globalThis.postMessage = msg => { if (!('progress' in msg)) result = msg; };
   await import('../js/guided-worker.js?test='+Math.random());
-  await self.onmessage({ data:{ root, sources:sources.map(source), parts, automatic } });
+  await self.onmessage({ data:{ root, sources:sources.map(source), parts, automatic, stereoWiener } });
   if (result.error) throw Error(result.error);
   return result.outputs.map(o => ({ ...o, data:files.get(o.id+'.pcm') }));
 }
@@ -98,4 +98,40 @@ test('global width preserves lead, bass and drums and is reversible for accompan
   assert.ok(spatialMix(track, { wider:true }).width > 1);
   assert.equal(spatialMix(track, {}).pan, 0);
   assert.equal(mix.width, 1);
+});
+
+test('stereo guidance separates overlapping sources with distinct panning and phase', async t => {
+  // Overlapping high-frequency chirps, with different inter-channel levels and delays.
+  const sourceA = signal((t, ch) => .2 * Math.sin(2*Math.PI*(5400*t + 130*t*t)));
+  const sourceB = signal((t, ch) => {
+    const time = t - ch * 2 / rate;
+    return (ch ? .23 : .065) * Math.sin(2*Math.PI*(5450*time + 105*time*time));
+  });
+  const reference = sourceA.map((v,i) => v + sourceB[i]);
+  const inputs = [reference, sourceA.map((v,i) => v + .12*sourceB[i]),
+    sourceB.map((v,i) => v + .12*sourceA[i])];
+  const old = await run(inputs, [{},{}], true, false);
+  const next = await run(inputs, [{},{}], true);
+  for (const [j, truth] of [sourceA, sourceB].entries()) {
+    let originalError = 0, newError = 0;
+    for (let i = 0; i < truth.length; i++) {
+      originalError += (old[j].data[i] - truth[i]) ** 2;
+      newError += (next[j].data[i] - truth[i]) ** 2;
+      assert.ok(Math.abs(next[0].data[i] + next[1].data[i] - reference[i]) < 1e-6);
+    }
+    const improvement = 10*Math.log10(originalError/newError);
+    t.diagnostic('source '+(j+1)+' relative error improvement: '+improvement.toFixed(2)+' dB');
+    assert.ok(improvement > 3);
+  }
+});
+
+test('coincident centered sources retain scalar estimates, including silent guide bins', async () => {
+  const centered = [a,b].map(data => data.map((_,i) => i < rate ? 0 : data[i - i%2]));
+  const reference = centered[0].map((v,i) => v + centered[1][i]);
+  const inputs = [reference, ...centered];
+  const scalar = await run(inputs, [{},{}], true, false);
+  const stereo = await run(inputs, [{},{}], true);
+  for (const [j, out] of stereo.entries()) {
+    for (let i = 0; i < out.data.length; i++) assert.ok(Math.abs(out.data[i] - scalar[j].data[i]) < 1e-6);
+  }
 });
