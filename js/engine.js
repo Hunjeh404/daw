@@ -136,7 +136,13 @@ export class Engine {
     if (src.fileId) await this.root.removeEntry(src.fileId + '.pcm').catch(() => {});
   }
 
-  get missingSources() { return [...this.sources.values()].filter((s) => s.missing && (this.guidedIds.includes(s.sid) || this.tracks.some((t) => t.clips.some((c) => c.sid === s.sid)))); }
+  get singleWav() { return this.guided?.separation === 'bs-roformer-sw-6-v1'; }
+
+  get missingSources() {
+    const generated = new Set(this.singleWav ? this.guided.parts.map(p => p.sid) : []);
+    return [...this.sources.values()].filter(s => s.missing && !generated.has(s.sid)
+      && (this.guidedIds.includes(s.sid) || this.tracks.some(t => t.clips.some(c => c.sid === s.sid))));
+  }
 
   // 트랙 만들기 (처리 연결 포함). opts: { cat, color }
   makeTrack(name, opts = {}) {
@@ -266,6 +272,7 @@ export class Engine {
     return this.guided ? [this.guided.reference, ...this.guided.parts.map(p => p.sid)] : [];
   }
   get guidedPending() {
+    if (this.singleWav) return this.guided.parts.some(p => !this.sources.get(p.sid)?.file);
     return !!this.guided && !this.sources.get(this.guided.parts[0]?.sid)?.variants;
   }
   get players() { return this.bed ? [...this.tracks, this.bed] : this.tracks; }

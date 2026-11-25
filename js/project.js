@@ -98,7 +98,7 @@ export function applyProject(E, p0) {
 
 // 새로 푼 음원 src를 채울 빈 자리 (길이·채널이 같고, 이름이 같으면 우선). 없으면 null
 export function matchSource(E, src) {
-  const holes = [...E.sources.values()].filter((s) => s.missing && s.frames === src.frames && s.ch === src.ch);
+  const holes = E.missingSources.filter((s) => s.frames === src.frames && s.ch === src.ch);
   if (!holes.length) return null;
   return holes.find((s) => s.name === src.name) || (E.guided ? null : holes[0]);
 }

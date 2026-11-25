@@ -42,7 +42,13 @@ export function initExport({ engine: E, flash, sub, setBusy, onStop }) {
     }
     return gVal;          // undefined = 계산 중
   }
-  const autoTail = () => { if (st.tailAuto) { const g = grid(); if (g !== undefined) st.tail = tailFor(g, st.b, 1); } };
+  function autoTail() {
+    if (!st.tailAuto) return;
+    const g = grid();
+    if (g === undefined) return;
+    const wet = E.mm.verb.on && included().some(t => t.mix.send > 0);
+    st.tail = tailFor(g, st.b, wet ? Math.max(1, E.mm.verb.size + .012) : 1);
+  }
 
   function card(title) {
     const c = document.createElement('div');
@@ -84,6 +90,7 @@ export function initExport({ engine: E, flash, sub, setBusy, onStop }) {
     if (E.guided && !E.guided.automatic && st.scope === 'mix') note(c1, inc.length === live().length && E.commonLayout()
       ? '전체 선택 시 원곡에 트랙 편집과 효과로 생긴 차이를 더합니다.'
       : '일부 트랙만 선택했거나 클립 배치가 다르면 해당 스템과 그 효과를 합칩니다.');
+    if (E.singleWav && st.scope === 'mix') note(c1, '자동 마스터링 · 목표 −14 LUFS, 트루피크 상한 −1 dBTP');
     if (st.scope === 'stems') note(c1, '트랙마다 트랙 믹싱 설정과 그 트랙의 리버브까지 넣고, 마스터는 입력 음량만 적용합니다. 0dB를 넘으면 모든 트랙을 같은 만큼 낮춥니다. 파일들은 zip 하나로 묶습니다.');
 
     // 구간: 앞뒤 자르기와 전체 페이드
@@ -129,7 +136,7 @@ export function initExport({ engine: E, flash, sub, setBusy, onStop }) {
       tailNote.textContent = !st.tailAuto ? '직접 정한 길이입니다. 끝을 옮겨도 그대로 둡니다.'
         : g === undefined ? '끝 부분 박자를 찾는 중입니다…'
         : g ? `박자에 맞춰 다음 마디 시작에서 끝나게 했습니다 (한 마디 ${g.bar.toFixed(2)}초). 끝을 옮기면 다시 맞춥니다.`
-          : '박자를 찾지 못해 1초로 두었습니다.';
+          : '잔향에 맞춰 끝 여백을 자동으로 정했습니다.';
     };
     paintTailNote();
     cR.appendChild(tailNote);

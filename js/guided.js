@@ -22,6 +22,10 @@ function runWorker(job, status) {
 
 export async function rebuildGuided(E, status) {
   if (!E.guidedPending || E.missingSources.length) return;
+  if (E.singleWav) {
+    const { rebuildDemix } = await import('./demix.js');
+    return rebuildDemix(E, status);
+  }
   const sources = E.guidedIds.map(sid => {
     const { file, frames, ch, scale, float } = E.sources.get(sid);
     return { file, frames, ch, scale, float };
