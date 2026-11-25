@@ -231,8 +231,8 @@ export function initMix({ engine: E, pushUndo, flash, sub, onChange, setBusy, un
       b.appendChild(slider({ label: '스테레오 폭', min: 0, max: 1, step: 0.05, unit: '%', get: () => m.width ?? 1, show: pct, set: (v) => { m.width = v; changed(); } }));
       const fr = document.createElement('div');
       fr.className = 'row';
-      fr.innerHTML = `<span class="grow">좌우 뒤집힘 바로잡기<small>${t.ana && t.ana.corr != null ? '좌우 상관 ' + t.ana.corr.toFixed(2) + (t.ana.corr < -0.3 ? ' · 뒤집혀 있음' : '') : '자동 분석 때 확인합니다'}</small></span>`;
-      fr.appendChild(toggle(!!m.flip, (v) => { m.flip = v; changed(); }, '좌우 뒤집힘 바로잡기'));
+      fr.innerHTML = `<span class="grow">오른쪽 채널 극성 반전<small>${t.ana && t.ana.corr != null ? '좌우 상관 ' + t.ana.corr.toFixed(2) + (t.ana.corr < -0.3 ? ' · 모노로 들을 때 소리가 약해질 수 있습니다' : '') : '자동 분석 때 확인합니다'}</small></span>`;
+      fr.appendChild(toggle(!!m.flip, (v) => { m.flip = v; changed(); }, '오른쪽 채널 극성 반전'));
       b.appendChild(fr);
       const r = document.createElement('div');
       r.className = 'row';
@@ -265,7 +265,7 @@ export function initMix({ engine: E, pushUndo, flash, sub, onChange, setBusy, un
       b.appendChild(slider({ label: '압축', min: 0, max: 1, step: 0.05, unit: '%', get: () => m.comp.amt, show: pct, set: (v) => { m.comp.amt = v; changed(); } }));
       b.appendChild(slider({ label: '어택', min: -1, max: 1, step: 0.05, get: () => m.comp.trans, show: (v) => (Math.abs(v) < 0.01 ? '그대로' : (v < 0 ? '부드럽게 ' : '살리기 ') + pct(Math.abs(v))), set: (v) => { m.comp.trans = v; changed(); } }));
     }));
-    body.appendChild(section('t-duck', '베이스 덕킹', { get: () => m.duck.on, set: (v) => { m.duck.on = v; changed(); } }, (b) => {
+    if (t.cat !== 'drums') body.appendChild(section('t-duck', '베이스 덕킹', { get: () => m.duck.on, set: (v) => { m.duck.on = v; changed(); } }, (b) => {
       b.appendChild(slider({ label: '세기', min: 0, max: 8, step: 0.5, unit: 'dB', get: () => m.duck.depth, show: (v) => v.toFixed(1), set: (v) => { m.duck.depth = v; changed(); } }));
       b.appendChild(note(E.tracks.some((x) => x.cat === 'drums') ? '드럼이 칠 때 이 트랙을 그만큼 살짝 누릅니다' : '이름에 drum(드럼)이 들어간 트랙이 있어야 동작합니다'));
     }));

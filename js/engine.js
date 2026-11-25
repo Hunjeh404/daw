@@ -4,6 +4,7 @@
 // 음원(sources)과 트랙은 따로다. 트랙은 여러 음원의 조각을 담을 수 있고, 빈 트랙도 있다.
 
 import { buildTrackChain, applyTrack, buildMaster, applyMaster, trackDefaults, masterDefaults } from './mixgraph.js';
+import { fadeGain } from './fades.js';
 import { category } from './cats.js';
 import { dbToLin } from './dsp.js';
 
@@ -147,9 +148,9 @@ export class Engine {
     fxc.out.connect(toSum).connect(this.M.sum);
     fxc.send.connect(this.M.vin);
     fxc.trim.connect(refGain).connect(this.out);
-    this.M.drumKey.connect(fxc.fx, 0, 1);
     const cat = opts.cat || category(name);
     if (cat === 'drums') toSum.connect(this.M.drumKey);
+    else this.M.drumKey.connect(fxc.fx, 0, 1);
     if (cat === 'vocal') toSum.connect(this.M.vocalKey);
     const t = {
       id: opts.id || crypto.randomUUID(), name, color: opts.color,
@@ -368,7 +369,8 @@ export class Engine {
     const EL = this.effLoop;
     const loop = EL.on ? { start: EL.start, end: EL.end } : null;
     this.schedFade(pos, ctxFrame / SR);
-    for (const t of this.tracks) t.node.port.postMessage({ type: 'play', ctxFrame, pos, loop });
+    const range = P ? { a: P.a, b: P.b, fi: P.fi, fo: P.fo, fadeInput: P.end > P.b } : null;
+    for (const t of this.tracks) t.node.port.postMessage({ type: 'play', ctxFrame, pos, loop, range });
     this.M.mfx.port.postMessage({ type: 'reset' });
     this.playing = true;
     this.feed();
@@ -392,19 +394,18 @@ export class Engine {
     g.cancelScheduledValues(0);
     g.setValueAtTime(g.value, now);
     const P = this.prev;
-    if (pos == null || !P) { g.setTargetAtTime(1, now, 0.01); return; }
-    const STEP = SR / 200, n = Math.max(2, Math.ceil((P.b - pos) / STEP) + 1);
-    const curve = new Float32Array(n);
-    for (let i = 0; i < n; i++) {
-      const f = pos + i * STEP;
-      let v = 1;
-      if (P.fi && f - P.a < P.fi) v *= Math.sin(Math.PI / 2 * Math.max(0, f - P.a) / P.fi);
-      if (P.fo && P.b - f < P.fo) v *= Math.sin(Math.PI / 2 * Math.max(0, P.b - f) / P.fo);
-      curve[i] = v;
+    if (pos == null || !P) { g.setTargetAtTime(P ? 0 : 1, now, 0.01); return; }
+    const end = P.end ?? P.b;
+    const dur = (end - pos) / SR;
+    if (end > P.b || (!P.fi && !P.fo)) {
+      // 끝 여백이 있으면 트랙 입력만 페이드하고 출력은 잔향이 끝날 때까지 열어 둔다.
+      g.setValueAtTime(1, at);
+    } else {
+      const n = Math.max(2, Math.ceil(dur * 200) + 1);
+      const curve = Float32Array.from({ length: n }, (_, i) => fadeGain(pos + i * (end - pos) / (n - 1), P));
+      g.setValueCurveAtTime(curve, at, dur);
     }
-    const dur = (n - 1) * STEP / SR;
-    g.setValueCurveAtTime(curve, at, dur);
-    g.setValueAtTime(0, at + dur + 0.001);   // 끝 지점 뒤는 조용히 (정지 확인 전 잠깐 새는 소리 막기)
+    g.setValueAtTime(0, at + dur);
   }
 
   // 내보내기 탭: p = { a, b, fi, fo, off } (프레임) 또는 null
@@ -432,6 +433,7 @@ export class Engine {
   async removeTrack(t, keep) {
     try { t.node.port.postMessage({ type: 'stop' }); } catch {}
     for (const n of [t.node, t.fxc.out, t.fxc.send, t.toSum, t.refGain]) { try { n.disconnect(); } catch {} }
+    if (t.cat !== 'drums') this.M.drumKey.disconnect(t.fxc.fx, 0, 1);
     this.tracks = this.tracks.filter((x) => x !== t);
     if (!keep) await this.pruneSources();
     this.applyAll();

@@ -93,7 +93,7 @@ export function initExport({ engine: E, flash, sub, setBusy, onStop }) {
     let tailRow = null;
     const paintSum = () => {
       autoTail();
-      sum.textContent = `${tfmt(st.a)} ~ ${tfmt(st.b)} (길이 ${tfmt(st.b - st.a)}) + 끝 무음 ${tsec(st.tail)}초 = ${tfmt(st.b - st.a + st.tail)}`;
+      sum.textContent = `${tfmt(st.a)} ~ ${tfmt(st.b)} (길이 ${tfmt(st.b - st.a)}) + 끝 여백 ${tsec(st.tail)}초 = ${tfmt(st.b - st.a + st.tail)}`;
       if (tailRow) { tailRow.querySelector('input').value = st.tail; tailRow.querySelector('.val').textContent = tsec(st.tail) + ' 초'; }
     };
     paintSum();
@@ -113,10 +113,11 @@ export function initExport({ engine: E, flash, sub, setBusy, onStop }) {
       slider({ label: '페이드 인', min: 0, max: 10, step: 0.1, unit: '초', noUndo: true, get: () => st.fi, show: (v) => v.toFixed(1), set: (v) => { st.fi = v; wave?.draw(); syncPrev(); } }),
       slider({ label: '페이드 아웃', min: 0, max: 20, step: 0.1, unit: '초', noUndo: true, get: () => st.fo, show: (v) => v.toFixed(1), set: (v) => { st.fo = v; wave?.draw(); syncPrev(); } }),
     );
-    // 끝 무음: 다음 곡이 바로 붙지 않게. 기본은 박자에 맞춰 다음 마디 시작에서 끝나게 (최소 1초)
-    tailRow = slider({ label: '끝 무음', min: 0, max: 10, step: 0.1, unit: '초', noUndo: true, get: () => st.tail, show: tsec, edit: tsec,
+    // 끝 여백: 다음 곡이 바로 붙지 않게. 기본은 박자에 맞춰 다음 마디 시작에서 끝나게 (최소 1초)
+    tailRow = slider({ label: '끝 여백', min: 0, max: 10, step: 0.1, unit: '초', noUndo: true, get: () => st.tail, show: tsec, edit: tsec,
       set: (v) => { st.tail = v; st.tailAuto = false; paintSum(); paintTailNote(); wave?.draw(); syncPrev(); } });
     cR.appendChild(tailRow);
+    note(cR, '선택 구간이 끝나면 잔향만 남습니다. 여백 길이까지 파일에 담습니다.');
     const tailNote = document.createElement('div');
     tailNote.className = 'note';
     const paintTailNote = () => {
@@ -283,13 +284,13 @@ export function initExport({ engine: E, flash, sub, setBusy, onStop }) {
         g.fillRect(x, mid - y, 1, y * 2);
         if (k > 0) { g.fillStyle = '#e9a23b'; const yy = Math.max(0.5, y * k); g.fillRect(x, mid - yy, 1, yy * 2); }
       }
-      // 끝 무음 자리
+      // 끝 여백 자리
       if (st.tail > 0) {
         const x0 = fx(st.b), x1 = fx(st.b + st.tail);
         g.fillStyle = 'rgba(24,26,31,.82)'; g.fillRect(x0, 0, x1 - x0, H);
         g.strokeStyle = 'rgba(233,162,59,.55)'; g.setLineDash([4, 4]); g.lineWidth = 1;
         g.beginPath(); g.moveTo(x0, mid + 0.5); g.lineTo(x1, mid + 0.5); g.moveTo(x1 - 0.5, 0); g.lineTo(x1 - 0.5, H); g.stroke(); g.setLineDash([]);
-        if (x1 - x0 > 46) { g.fillStyle = 'rgba(232,233,236,.75)'; g.font = '11px system-ui, sans-serif'; g.textAlign = 'center'; g.fillText(`무음 ${st.tail.toFixed(1)}초`, (x0 + x1) / 2, mid - 8); g.textAlign = 'start'; }
+        if (x1 - x0 > 46) { g.fillStyle = 'rgba(232,233,236,.75)'; g.font = '11px system-ui, sans-serif'; g.textAlign = 'center'; g.fillText(`여백 ${st.tail.toFixed(1)}초`, (x0 + x1) / 2, mid - 8); g.textAlign = 'start'; }
       }
       // 페이드 선
       g.strokeStyle = 'rgba(232,233,236,.8)'; g.lineWidth = 1.5;
