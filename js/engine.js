@@ -75,14 +75,14 @@ export class Engine {
   }
 
   get duration() {
-    let d = 0;
+    let d = this.mode === 'ref' && !this.prev ? this.sources.get(this.guided?.reference)?.frames || 0 : 0;
     for (const t of this.tracks) for (const c of t.clips) d = Math.max(d, c.start + c.len);
     return d;
   }
 
   // 음원 하나를 풀어 저장 (트랙은 만들지 않음)
-  async addSource(name, arrayBuffer) {
-    return this.addBuffer(name, await this.ctx.decodeAudioData(arrayBuffer));
+  async addSource(name, arrayBuffer, extra) {
+    return this.addBuffer(name, await this.ctx.decodeAudioData(arrayBuffer), extra);
   }
 
   // 이미 풀린 소리(AudioBuffer)를 저장 (미디로 구운 소리도 여기로). extra는 음원 항목에 덧붙일 값
@@ -94,14 +94,15 @@ export class Engine {
       const d = buf.getChannelData(c);
       for (let i = 0; i < frames; i++) { const a = d[i] < 0 ? -d[i] : d[i]; if (a > peak) peak = a; }
     }
-    const scale = peak > 1 ? peak : 1;
+    const floating = !!extra?.float;
+    const scale = floating ? 1 : Math.max(1, peak);
     const sid = crypto.randomUUID();
     const fh = await this.root.getFileHandle(sid + '.pcm', { create: true });
     const peaks = new Float32Array(Math.ceil(frames / PEAK));
     let w;
     try {
       w = await fh.createWritable();
-      await this.writePcm(w, buf, ch, frames, peaks, scale);
+      await this.writePcm(w, buf, ch, frames, peaks, scale, floating);
     } catch (err) {
       try { await w?.abort(); } catch {}
       await this.root.removeEntry(sid + '.pcm').catch(() => {});
@@ -115,7 +116,7 @@ export class Engine {
 
   // 아직 음원이 없는 자리 (프로젝트에서 열었을 때)
   addMissingSource(info) {
-    const src = { sid: info.sid, idx: this.nextIdx++, name: info.name, frames: info.frames, ch: info.ch, scale: info.scale || 1, peaks: null, file: null, missing: true, midi: info.midi };
+    const src = { sid: info.sid, idx: this.nextIdx++, name: info.name, frames: info.frames, ch: info.ch, scale: info.scale || 1, peaks: null, file: null, missing: true, float: !!info.float, midi: info.midi };
     this.sources.set(src.sid, src);
     this.srcIdx.set(src.idx, src);
     return src;
@@ -123,7 +124,7 @@ export class Engine {
 
   // 빈 자리에 새로 푼 음원을 채운다 (새 음원 항목은 없앰)
   fillSource(hole, src) {
-    Object.assign(hole, { file: src.file, peaks: src.peaks, scale: src.scale, fileId: src.fileId, missing: false });
+    Object.assign(hole, { float: !!src.float, file: src.file, peaks: src.peaks, scale: src.scale, fileId: src.fileId, missing: false });
     this.sources.delete(src.sid);
     this.srcIdx.delete(src.idx);
     for (const t of this.tracks) if (t.clips.some((c) => c.sid === hole.sid)) this.updateSegs(t);
@@ -135,7 +136,7 @@ export class Engine {
     if (src.fileId) await this.root.removeEntry(src.fileId + '.pcm').catch(() => {});
   }
 
-  get missingSources() { return [...this.sources.values()].filter((s) => s.missing && this.tracks.some((t) => t.clips.some((c) => c.sid === s.sid))); }
+  get missingSources() { return [...this.sources.values()].filter((s) => s.missing && (this.guidedIds.includes(s.sid) || this.tracks.some((t) => t.clips.some((c) => c.sid === s.sid)))); }
 
   // 트랙 만들기 (처리 연결 포함). opts: { cat, color }
   makeTrack(name, opts = {}) {
@@ -186,25 +187,25 @@ export class Engine {
   // 트랙이 쓰는 음원 정보 (분석·렌더용: 워커로도 보낼 수 있는 값만)
   srcView(t) {
     const srcs = {};
-    for (const s of t.segs) { const src = this.sources.get(s.sid); if (src && !src.missing) srcs[s.sid] = { file: src.file, ch: src.ch, scale: src.scale }; }
+    for (const s of t.segs) { const src = this.sources.get(s.sid); if (src && !src.missing) srcs[s.sid] = { file: src.file, ch: src.ch, scale: src.scale, float: !!src.float }; }
     return { segs: t.segs, srcs };
   }
 
-  async writePcm(w, buf, ch, frames, peaks, scale) {
+  async writePcm(w, buf, ch, frames, peaks, scale, floating) {
     const k = 1 / scale;
     const L = buf.getChannelData(0);
     const R = ch === 2 ? buf.getChannelData(1) : null;
     for (let s = 0; s < frames; s += BLOCK) {
       const n = Math.min(BLOCK, frames - s);
-      const out = new Int16Array(n * ch);
+      const out = floating ? new Float32Array(n * ch) : new Int16Array(n * ch);
       for (let i = 0; i < n; i++) {
         const f = s + i;
         const l = L[f] * k;
-        out[i * ch] = l * 32767;
+        out[i * ch] = floating ? l : l * 32767;
         let a = l < 0 ? -l : l;
         if (R) {
           const r = R[f] * k;
-          out[i * ch + 1] = r * 32767;
+          out[i * ch + 1] = floating ? r : r * 32767;
           const ar = r < 0 ? -r : r;
           if (ar > a) a = ar;
         }
@@ -245,8 +246,10 @@ export class Engine {
       const len = s.end - s.start;
       s.fi = Math.min(s.fi, len);
       s.fo = Math.min(s.fo, len);
+      s.canonical = s.sid;
+      s.sid = this.versionSid(s.sid);
       const src = this.sources.get(s.sid);
-      s.idx = src ? src.idx : 0; s.ch = src ? src.ch : 2; s.k = src ? src.scale : 1;
+      s.idx = src ? src.idx : 0; s.ch = src ? src.ch : 2; s.k = src?.float ? 32768 : src?.scale || 1;
     }
     // 음원이 없는 조각은 소리 내지 않음
     return segs.filter((s) => s.end > s.start && this.sources.get(s.sid) && !this.sources.get(s.sid).missing);
@@ -255,6 +258,84 @@ export class Engine {
   updateSegs(t) {
     t.segs = this.buildSegs(t);
     t.node.port.postMessage({ type: 'segs', segs: t.segs });
+    if (this.bed) this.refreshBed();
+    this.feed();
+  }
+
+  get guidedIds() {
+    return this.guided ? [this.guided.reference, ...this.guided.parts.map(p => p.sid)] : [];
+  }
+  get guidedPending() {
+    return !!this.guided && !this.sources.get(this.guided.parts[0]?.sid)?.variants;
+  }
+  get players() { return this.bed ? [...this.tracks, this.bed] : this.tracks; }
+
+  versionSid(sid) {
+    const src = this.sources.get(sid);
+    if (!src?.variants) return sid;
+    const part = this.guided.parts.find(p => p.sid === sid);
+    const mode = this.tracks.find(t => t.id === part.trackId)?.mix.version || part.version;
+    return src.variants[mode] || sid;
+  }
+
+  // 같은 편집을 전체 스템에 했으면 원곡 보정에도 같은 컷·이동·페이드를 적용한다.
+  // 서로 다르게 편집한 트랙에는 맞는 원곡 시점이 하나로 정해지지 않는다.
+  commonLayout() {
+    let layout = null;
+    for (const part of this.guided.parts) {
+      const track = this.tracks.find(t => t.id === part.trackId);
+      if (!track || track.segs.some(s => s.canonical !== part.sid)) return null;
+      if (!layout) layout = track.segs;
+      else if (layout.length !== track.segs.length || layout.some((seg, i) =>
+        ['start', 'end', 'src', 'fi', 'fo'].some(key => seg[key] !== track.segs[i][key]))) return null;
+    }
+    return layout || [];
+  }
+
+  // 전체 믹스에서만 원곡에 대한 차이를 더한다. 솔로와 트랙별 출력은 선택한 음원 자체다.
+  bedSegments(mode = 'apply', monitor = null) {
+    if (!this.guided || this.guidedPending) return [];
+    const layer = (sid, sign, clip) => {
+      const s = this.sources.get(sid);
+      return { start: 0, end: s.frames, src: 0, fi: 0, fo: 0, ...clip,
+        sid, sign, idx: s.idx, ch: s.ch, k: sign * (s.float ? 32768 : s.scale) };
+    };
+    if (monitor) {
+      const t = this.tracks.find(t => t.id === monitor.track);
+      if (!t) return [];
+      if (monitor.type === 'source') return t.segs.map(s => layer(s.sid, 1, s));
+      if (monitor.type !== 'difference') return [];
+      return t.segs.flatMap(s => s.sid === s.canonical ? [] :
+        [layer(s.canonical, 1, s), layer(s.sid, -1, s)]);
+    }
+    if (mode === 'raw') return [];
+    const ref = layer(this.guided.reference, 1);
+    if (mode === 'ref') return [ref];
+    const layout = this.commonLayout() || [];
+    return layout.flatMap(({ start, end, src, fi, fo }) => {
+      const clip = { start, end, src, fi, fo };
+      return [layer(this.guided.reference, 1, clip), ...this.guided.parts.map(p => layer(this.versionSid(p.sid), -1, clip))];
+    });
+  }
+
+  refreshBed() {
+    if (!this.guided || this.guidedPending) return;
+    if (!this.bed) {
+      const node = new AudioWorkletNode(this.ctx, 'track-player', { numberOfInputs: 0, outputChannelCount: [2] });
+      const direct = this.ctx.createGain(), sum = this.ctx.createGain();
+      node.connect(direct).connect(this.out); node.connect(sum).connect(this.M.sum);
+      this.bed = { node, direct, sum, sent: new Set(), segs: [] };
+    }
+    const bed = this.bed;
+    const mode = this.prev ? 'apply' : this.mode, monitor = this.prev ? null : this.monitor;
+    const solo = !this.prev && this.tracks.some(t => t.solo);
+    const silent = !this.prev && this.tracks.every(t => t.muted);
+    const partial = this.prev && (this.tracks.some(t => this.prev.off.has(t.id)) || this.prev.isolated);
+    bed.segs = (mode === 'apply' && !monitor && (solo || silent || partial)) ? [] : this.bedSegments(mode, monitor);
+    const direct = mode === 'ref' || (monitor && monitor.type !== 'wet');
+    bed.direct.gain.value = direct ? 1 : 0;
+    bed.sum.gain.value = direct ? 0 : 1;
+    bed.node.port.postMessage({ type: 'segs', segs: bed.segs });
     this.feed();
   }
 
@@ -263,25 +344,28 @@ export class Engine {
     if (!this.ctx) return;
     const now = this.ctx.currentTime;
     const set = (param, v) => param.setTargetAtTime(v, now, 0.015);
-    const raw = this.mode === 'raw', refMode = this.mode === 'ref';
+    const mode = this.guided && this.prev ? 'apply' : this.mode;
+    const raw = mode === 'raw', refMode = mode === 'ref';
+    const monitor = !this.prev && this.monitor;
+    this.refreshBed();
     const live = this.tracks.filter((t) => !t.mix.ref);
     const anySolo = live.some((t) => t.solo);
     const P = this.prev;
     for (const t of this.tracks) {
-      const on = P ? !P.off.has(t.id) : !t.muted && (!anySolo || t.solo || t.mix.ref);
+      const on = monitor ? monitor.type === 'wet' && t.id === monitor.track : P ? !P.off.has(t.id) : !t.muted && (!anySolo || t.solo || t.mix.ref);
       const isRef = t.mix.ref;
       set(t.fxc.fader.gain, on && !isRef ? (raw ? 1 : dbToLin(t.volumeDb)) : 0);
-      set(t.toSum.gain, isRef ? 0 : 1);
+      set(t.toSum.gain, isRef || monitor ? 0 : 1);
       set(t.refGain.gain, refMode && isRef && on ? dbToLin(this.refMatchDb()) : 0);
       applyTrack(t.fxc, t.mix, raw || isRef, this.ctx, t.ana?.lufs ?? -20);
     }
-    applyMaster(this.M, this.mm, raw, this.ctx, refMode ? -Infinity : raw ? this.rawMatchDb() : 0);
+    applyMaster(this.M, this.mm, raw, this.ctx, refMode || (monitor && monitor.type !== 'wet') ? -Infinity : raw && !this.guided ? this.rawMatchDb() : 0);
   }
   applyGains() { this.applyAll(); }
-  get hasRef() { return this.tracks.some((t) => t.mix.ref); }
+  get hasRef() { return !!this.guided || this.tracks.some((t) => t.mix.ref); }
   rawMatchDb() { const a = this.ana; return a.procLufs != null && a.rawLufs != null ? a.procLufs - a.rawLufs : 0; }
   refMatchDb() { const a = this.ana; return a.procLufs != null && a.refLufs != null ? a.procLufs - a.refLufs : 0; }
-  setMode(m) { this.mode = m; this.applyAll(); }
+  setMode(m) { this.mode = m; this.monitor = null; this.applyAll(); }
 
   get effLoop() { return this.prev ? { on: false, start: 0, end: 0 } : this.loop; }
 
@@ -328,10 +412,10 @@ export class Engine {
     if (first >= src.frames || b < 0) return;
     t.sent.add(key);
     const n = Math.min(BLOCK, src.frames - first);
-    const bytes = 2 * src.ch;
+    const bytes = (src.float ? 4 : 2) * src.ch;
     const ab = await src.file.slice(first * bytes, (first + n) * bytes).arrayBuffer();
     if (!t.sent.has(key)) return; // 그새 정지·이동으로 필요 없어짐
-    t.node.port.postMessage({ type: 'block', b: key, data: new Int16Array(ab) }, [ab]);
+    t.node.port.postMessage({ type: 'block', b: key, data: src.float ? new Float32Array(ab) : new Int16Array(ab) }, [ab]);
   }
 
   feed() {
@@ -341,7 +425,7 @@ export class Engine {
     if (P && pos >= (P.end ?? P.b)) { this.stop(); this.pausedPos = P.a; this.onEnd && this.onEnd(); return; }
     if (!this.loop.on && pos >= this.duration && !(P && (P.end ?? P.b) > pos)) { this.stop(); this.pausedPos = 0; this.onEnd && this.onEnd(); return; }
     const wins = this.windows(Math.max(0, pos - BLOCK), AHEAD + BLOCK);
-    for (const t of this.tracks) {
+    for (const t of this.players) {
       const need = this.neededBlocks(t, wins);
       const drop = [];
       for (const b of t.sent) if (!need.has(b)) drop.push(b);
@@ -354,7 +438,7 @@ export class Engine {
   }
 
   async play() {
-    if (this.playing || !this.tracks.length) return;
+    if (this.playing || !this.tracks.length || this.guidedPending || this.loading) return;
     await this.ctx.resume();
     let pos = this.pausedPos;
     const P = this.prev;
@@ -363,14 +447,14 @@ export class Engine {
     this.startPos = pos;
     // 시작 직후 3초 분량은 모든 트랙에 확실히 넣어 둔다
     const wins = this.windows(pos, 3 * SR);
-    await Promise.all(this.tracks.flatMap((t) => [...this.neededBlocks(t, wins)].map((b) => this.sendBlock(t, b))));
+    await Promise.all(this.players.flatMap((t) => [...this.neededBlocks(t, wins)].map((b) => this.sendBlock(t, b))));
     const ctxFrame = Math.round((this.ctx.currentTime + 0.1) * SR);
     this.startCtxFrame = ctxFrame;
     const EL = this.effLoop;
     const loop = EL.on ? { start: EL.start, end: EL.end } : null;
     this.schedFade(pos, ctxFrame / SR);
     const range = P ? { a: P.a, b: P.b, fi: P.fi, fo: P.fo, fadeInput: P.end > P.b } : null;
-    for (const t of this.tracks) t.node.port.postMessage({ type: 'play', ctxFrame, pos, loop, range });
+    for (const t of this.players) t.node.port.postMessage({ type: 'play', ctxFrame, pos, loop, range });
     this.M.mfx.port.postMessage({ type: 'reset' });
     this.playing = true;
     this.feed();
@@ -381,7 +465,7 @@ export class Engine {
     this.pausedPos = this.position;
     this.playing = false;
     this.schedFade();
-    for (const t of this.tracks) {
+    for (const t of this.players) {
       t.node.port.postMessage({ type: 'stop' });
       t.node.port.postMessage({ type: 'clear' });
       t.sent.clear();
@@ -434,19 +518,27 @@ export class Engine {
     try { t.node.port.postMessage({ type: 'stop' }); } catch {}
     for (const n of [t.node, t.fxc.out, t.fxc.send, t.toSum, t.refGain]) { try { n.disconnect(); } catch {} }
     if (t.cat !== 'drums') this.M.drumKey.disconnect(t.fxc.fx, 0, 1);
+    const part = this.guided?.parts.find(p => p.trackId === t.id);
+    if (part) part.version = t.mix.version;
+    if (this.monitor?.track === t.id) this.monitor = null;
     this.tracks = this.tracks.filter((x) => x !== t);
     if (!keep) await this.pruneSources();
     this.applyAll();
   }
   async pruneSources() {
     for (const src of [...this.sources.values()]) {
-      if (!this.tracks.some((t) => t.clips.some((c) => c.sid === src.sid))) await this.removeSource(src);
+      if (!src.derived && !this.guidedIds.includes(src.sid) && !this.tracks.some((t) => t.clips.some((c) => c.sid === src.sid))) await this.removeSource(src);
     }
   }
 
   // 모두 비우기 (새 프로젝트, 프로젝트 열기 전)
   async clearAll() {
     this.stop();
+    if (this.bed) {
+      this.bed.node.disconnect(); this.bed.direct.disconnect(); this.bed.sum.disconnect();
+      this.bed = null;
+    }
+    this.guided = null; this.monitor = null;
     for (const t of [...this.tracks]) await this.removeTrack(t);
     for (const src of [...this.sources.values()]) await this.removeSource(src);
     this.mm = masterDefaults();

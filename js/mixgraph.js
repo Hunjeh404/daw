@@ -68,7 +68,7 @@ const setter = (ctx, now) => (param, v) => { if (now) param.value = v; else para
 export function applyTrack(ch, m, raw, ctx, ref, now) {
   const set = setter(ctx, now);
   const on = !raw;
-  set(ch.hp.frequency, on && m.low.on ? m.low.hz : 10);
+  set(ch.hp.frequency, on && m.low.on ? m.low.hz : 0);
   set(ch.ls.gain, on && m.eq.on ? m.eq.low : 0);
   set(ch.pk.gain, on && m.eq.on ? m.eq.mid : 0);
   set(ch.hs.gain, on && m.eq.on ? m.eq.high : 0);
@@ -156,7 +156,7 @@ export function makeIR(ctx, seconds) {
 export function applyMaster(M, mm, raw, ctx, matchDb, now) {
   const set = setter(ctx, now);
   const on = !raw;
-  set(M.hp.frequency, on && mm.low.on ? mm.low.hz : 10);
+  set(M.hp.frequency, on && mm.low.on ? mm.low.hz : 0);
   set(M.ls.gain, on && mm.eq.on ? mm.eq.low : 0);
   set(M.pk.gain, on && mm.eq.on ? mm.eq.mid : 0);
   set(M.hs.gain, on && mm.eq.on ? mm.eq.high : 0);

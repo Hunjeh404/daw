@@ -13,7 +13,7 @@ function envelope(E, tracks, n) {
   for (const t of tracks) {
     const g = dbToLin(t.volumeDb);
     for (const c of t.clips) {
-      const src = E.sources.get(c.sid);
+      const src = E.sources.get(E.versionSid(c.sid));
       if (!src || src.missing) continue;
       const pk = src.peaks, k = src.scale * g;
       const x0 = Math.floor(c.start / PEAK), x1 = Math.min(n, Math.floor((c.start + c.len) / PEAK));

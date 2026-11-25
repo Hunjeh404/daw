@@ -22,7 +22,7 @@ export async function exportAudio(E, opt, onProgress) {
   const renderFile = (w, only, mm, progress) => renderRange(E, a, b, (L, R, c0) => {
     if (!tail) fadeBuffer(L, R, c0, range);
     return w.push(L, R);
-  }, { only, mm, onProgress: progress, tail, inputFade: tail ? range : null });
+  }, { only, mm, isolated: scope === 'stems', onProgress: progress, tail, inputFade: tail ? range : null });
   const ext = fmt === 'mp3' ? 'mp3' : 'wav';
   const base = safe(meta.title) || 'mix';
   const make = (m) => (fmt === 'mp3' ? new Mp3Writer(m) : new WavWriter(dur, bits, m));

@@ -9,12 +9,12 @@ export async function readWindow(v, w0, w1) {
   for (const s of v.segs) {
     const src = v.srcs[s.sid];
     if (!src) continue;
-    const ch = src.ch, bytes = 2 * ch, k = src.scale / 32768;
+    const ch = src.ch, bytes = (src.float ? 4 : 2) * ch, k = (s.sign ?? 1) * (src.float ? 1 : src.scale / 32768);
     const a = Math.max(w0, s.start), b = Math.min(w1, s.end);
     if (a >= b) continue;
     const src0 = s.src + (a - s.start);
     const ab = await src.file.slice(src0 * bytes, (src0 + (b - a)) * bytes).arrayBuffer();
-    const d = new Int16Array(ab);
+    const d = src.float ? new Float32Array(ab) : new Int16Array(ab);
     const cnt = d.length / ch;
     for (let i = 0; i < cnt; i++) {
       const pos = a + i;
