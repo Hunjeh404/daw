@@ -115,12 +115,16 @@ function repairWeight(partEnergy, mixEnergy, totalEnergy, bins, k) {
   return Math.min(1, (.063 - ratio) / .059) * (1 - 4 * others) * Math.min(1, partEnergy / .0001) * cancellation;
 }
 
-function writeFrame(output, bins, energies, total, denominator, midi, scratch, pos) {
+function writeFrame(output, bins, energies, total, denominator, midi, scratch, pos, rhythmShare) {
   const part = output.j + 1;
   const count = bins.length - 1;
   for (let k = 0; k <= H; k++) {
     const energy = energies[part][k];
-    if (output.mode === 'repair') {
+    if (output.mode === 'auto') {
+      const base = total[k] > 1e-20 ? energy / total[k] : 1 / count;
+      output.weight[k] = output.guided && total[k] > 1e-20
+        ? base * (1 + midi[output.j][k]) * rhythmShare[k] : base;
+    } else if (output.mode === 'repair') {
       output.weight[k] = repairWeight(energy, energies[0][k], total[k], bins, k);
     } else if (output.mode === 'midi') {
       output.weight[k] = denominator[k] > 1e-20 ? energy * (1 + midi[output.j][k]) / denominator[k] : 1 / count;
@@ -160,15 +164,17 @@ function writeChunk(output, raw, channels, start, count) {
     const peakIndex = Math.floor((start + i) / H);
     for (let ch = 0; ch < 2; ch++) {
       const sample = data[2*i+ch], original = raw[(i+H)*channels + Math.min(ch, channels-1)];
-      output.delta += (sample - original) ** 2;
-      output.originalEnergy += original ** 2;
+      if (output.mode !== 'auto') {
+        output.delta += (sample - original) ** 2;
+        output.originalEnergy += original ** 2;
+      }
       output.peaks[peakIndex] = Math.max(output.peaks[peakIndex], Math.abs(sample));
     }
   }
   if (output.writer.write(data, { at:start * 8 }) !== data.byteLength) throw Error('분리 음원 저장 공간이 부족합니다.');
 }
 
-async function separate({ root, sources, parts }) {
+async function separate({ root, sources, parts, automatic = false }) {
   await checkAlignment(sources);
   const frames = sources[0].frames, width = H + 1;
   const bins = sources.map(() => [spectrum(), spectrum()]);
@@ -176,7 +182,10 @@ async function separate({ root, sources, parts }) {
   const total = new Float64Array(width), scratch = spectrum();
   const denominator = new Float64Array(width), previous = new Float64Array(width);
   const midi = parts.map(() => new Float64Array(width));
-  const modes = parts.some(p => p.notes?.length) ? ['wav','repair','midi'] : ['wav','repair'];
+  // MIDI가 있는 리듬 악기들의 기존 총 몫만 재분배한다. 보컬과 나머지 악기의 마스크는 고정한다.
+  const guided = parts.map(p => !!p.notes?.length && ['bass', 'drums', 'perc'].includes(p.kind));
+  const rhythmShare = new Float64Array(width);
+  const modes = automatic ? ['auto'] : parts.some(p => p.notes?.length) ? ['wav','repair','midi'] : ['wav','repair'];
   const outputs = [], created = [];
   try {
     for (let j = 0; j < parts.length; j++) {
@@ -186,7 +195,7 @@ async function separate({ root, sources, parts }) {
         created.push(filename);
         const writer = await file.createSyncAccessHandle();
         outputs.push({
-          j, mode, id, writer, delta:0, originalEnergy:0,
+          j, mode, id, guided:guided[j], writer, delta:0, originalEnergy:0,
           peaks:new Float32Array(Math.ceil(frames/H)), overlap:new Float32Array(H*2),
           chunk:new Float32Array(BLOCK*2), weight:new Float64Array(width),
         });
@@ -208,10 +217,13 @@ async function separate({ root, sources, parts }) {
             if (j) total[k] += energies[j][k];
           }
         }
-        denominator.set(total);
+        if (automatic) {
+          denominator.fill(0);
+          rhythmShare.fill(0);
+        } else denominator.set(total);
         const sec = (start+pos+H)/SR, mix = energies[0];
         for (const [j, part] of parts.entries()) {
-          if (!part.notes?.length) continue;
+          if (!guided[j]) continue;
           const hint = midi[j];
           hint.fill(0);
           midiWeights(hint, part.notes, part.kind, sec);
@@ -219,11 +231,17 @@ async function separate({ root, sources, parts }) {
             const base = part.kind === 'bass'
               ? .5 * (mix[Math.max(0,k-2)] + mix[Math.min(H,k+2)]) : previous[k];
             hint[k] *= Math.max(0, Math.min(1, (mix[k]-base)/(mix[k]+1e-16)));
-            denominator[k] += energies[j+1][k] * hint[k];
+            const energy = energies[j+1][k];
+            if (automatic) rhythmShare[k] += energy;
+            denominator[k] += energy * hint[k];
           }
         }
+        if (automatic) for (let k = 0; k < width; k++) {
+          const group = rhythmShare[k];
+          rhythmShare[k] = group > 0 ? group / (group + denominator[k]) : 1;
+        }
         previous.set(mix);
-        for (const output of outputs) writeFrame(output, bins, energies, total, denominator, midi, scratch, pos);
+        for (const output of outputs) writeFrame(output, bins, energies, total, denominator, midi, scratch, pos, rhythmShare);
       }
       for (const output of outputs) writeChunk(output, input[output.j+1], sources[output.j+1].ch, start, count);
       postMessage({ progress:(start+count)/frames });

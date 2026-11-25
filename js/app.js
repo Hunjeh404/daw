@@ -1,7 +1,7 @@
 import { Engine, SR, PEAK, newClipId } from './engine.js';
 import { listZip, readEntry } from './zip.js';
 import { colorFor } from './cats.js';
-import { slider, setUndoHook, segmented } from './ui.js';
+import { slider, setUndoHook, segmented, toggle } from './ui.js';
 import { initMix } from './mix.js';
 import { initExport } from './exportui.js';
 import { initProjects } from './projectui.js';
@@ -108,20 +108,21 @@ $('guidedLoad').onclick = () => {
 $('guidedClose').onclick = () => dialog.close();
 dialog.oncancel = e => { if (loading) e.preventDefault(); };
 $('guidedForm').onsubmit = e => {
-  e.preventDefault(); loadGuided($('guidedRef').files[0], $('guidedZip').files[0], $('guidedMidi').checked);
+  e.preventDefault(); loadGuided($('guidedRef').files[0], $('guidedZip').files[0]);
 };
 
-async function loadGuided(ref, zip, useMidi = true) {
+async function loadGuided(ref, zip) {
   if (loading || busy || !ref || !zip) return;
   loading = engine.loading = true;
   for (const input of $('guidedForm').elements) input.disabled = true;
   try {
     await cleared; await engine.init(); engine.stop();
-    await importGuided(engine, ref, zip, guidedStatus, useMidi);
+    await importGuided(engine, ref, zip, guidedStatus);
     for (const t of engine.tracks) renderTrack(t);
     orderRows(); fitZoom(); afterChange(); renderCompare(); paintRelink();
     dialog.close(); $('guidedForm').reset();
-    flash('분리 완료 · 믹싱 탭에서 트랙별 소리를 비교하세요.');
+    document.querySelector('nav [data-tab="mix"]').click();
+    flash('스템 준비 완료');
   } catch (err) {
     guidedStatus(err.name === 'QuotaExceededError' ? '브라우저 저장공간이 부족합니다. 공간을 확보한 뒤 다시 시도하세요.' : err.message);
     if (!dialog.open) dialog.showModal();
@@ -630,6 +631,20 @@ function renderPanel() {
 function renderVol(t) {
   const vb = $('volBox');
   vb.innerHTML = '';
+  if (!engine.guided) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const label = document.createElement('span');
+    label.className = 'grow'; label.textContent = '비교 원곡으로 쓰기';
+    row.append(label, toggle(t.mix.ref, enabled => {
+      if (enabled) for (const track of engine.tracks) track.mix.ref = false;
+      t.mix.ref = enabled;
+      engine.ana.refLufs = engine.ana.procLufs = null;
+      if (!engine.hasRef) engine.mode = 'apply';
+      engine.applyAll(); afterChange(); renderCompare();
+    }, '비교 원곡으로 쓰기'));
+    vb.append(row);
+  }
   vb.append(slider({
     label: '트랙 볼륨', min: -24, max: 12, step: 0.1, unit: 'dB',
     get: () => t.volumeDb, show: (v) => (v > 0 ? '+' : '') + v.toFixed(1),
@@ -754,10 +769,9 @@ engine.onEnd = () => { updatePlayBtn(); redraw(); };
 
 // ---------- 믹싱 탭 ----------
 const mix = initMix({
-  engine, pushUndo, flash, sub,
-  setBusy: (b) => { busy = b; if (!b) showStats(); },
+  engine, pushUndo,
   undo: () => $('undo').click(), redo: () => $('redo').click(),
-  onChange: (what) => { if (what === 'stop') updatePlayBtn(); renderCompare(); for (const t of engine.tracks) updateHead(t); orderRows(); redraw(); },
+  onChange: () => { renderCompare(); for (const t of engine.tracks) updateHead(t); renderPanel(); redraw(); },
 });
 
 // ---------- 내보내기 탭 ----------
@@ -823,14 +837,8 @@ function paintSeek(f) {
 function renderCompare() {
   const box = $('compare');
   box.innerHTML = '';
-  if (!engine.tracks.length) return;
-  const opts = engine.guided ? [['apply', '믹스'], ['raw', '스템 합'], ['ref', '원곡']] : [['raw', '원본'], ['apply', '적용']];
-  if (engine.hasRef && !engine.guided) opts.push(['ref', '원곡']);
-  box.appendChild(segmented(opts, engine.mode, (m) => {
-    engine.setMode(m);
-    if (engine.guided) refreshTabs();
-    if (!engine.guided && m !== 'apply' && engine.ana.procLufs == null) flash('마스터 자동 분석 전이라 비교 음량이 맞춰지지 않았습니다');
-  }));
+  if (!engine.hasRef || document.querySelector('nav [data-tab="export"]').classList.contains('on')) return;
+  box.appendChild(segmented([['ref', '원곡'], ['apply', '내 믹스']], engine.mode, m => engine.setMode(m)));
 }
 
 // ---------- 탭 ----------
@@ -846,8 +854,9 @@ for (const b of document.querySelectorAll('nav button')) {
     for (const s of document.querySelectorAll('.tab')) s.classList.toggle('show', s.id === 'tab-' + b.dataset.tab);
     if (engine.monitor && b.dataset.tab !== 'mix') { engine.monitor = null; engine.applyAll(); }
     if (b.dataset.tab === 'mix') { if (sel) mix.select(sel.t); mix.render(); }
-    if (b.dataset.tab === 'export') exp.render();
+    if (b.dataset.tab === 'export') { engine.setMode('apply'); exp.render(); }
     exp.setActive(b.dataset.tab === 'export');
+    renderCompare();
     if (fitPending && view.clientWidth) fitZoom(); else layout();
   };
 }
