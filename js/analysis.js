@@ -95,7 +95,7 @@ export function suggestTrack(E, t) {
     air: t.cat === 'bass' ? 0 : +clamp(0.2 + (airRel + 15) * 0.03, 0, 0.6).toFixed(2),
   };
   m.comp = { on: c.comp > 0 || c.trans !== 0, amt: +clamp(c.comp + (a.crest > 18 ? 0.1 : 0), 0, 1).toFixed(2), trans: c.trans };
-  // 좌우 뒤집힘 바로잡기, 좌우가 따로 노는 넓음은 좁히기 (넓히지는 않음)
+  // 사용자가 선택한 극성을 기준으로 스테레오 폭을 계산한다.
   setWidth(E, t);
   // 잔향이 이미 많이 들어간 스템(크기 변화 폭이 좁음)은 공용 리버브를 줄이거나 보내지 않는다
   const sp = a.spread;
@@ -116,9 +116,8 @@ export function setWidth(E, t) {
   const a = t.ana;
   if (!a || a.corr == null) return;
   const sp = SPREAD[E.mm.spread] || SPREAD.some;
-  let corr = a.corr, q = a.msRatio;
-  t.mix.flip = corr < -0.3;
-  if (t.mix.flip) { corr = -corr; q = q > 0 ? 1 / q : 0; }
+  let q = a.msRatio;
+  if (t.mix.flip && q > 0) q = 1 / q;
   const ct = Math.min(0.99, (CORR[t.cat] ?? 0.6) + sp.corr);
   const w = q > 0 ? Math.sqrt((1 - ct) / ((1 + ct) * q)) : 1;
   t.mix.width = +Math.min(1, w).toFixed(2);

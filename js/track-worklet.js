@@ -1,5 +1,7 @@
 // 트랙 하나를 재생하는 프로세서. 메인 스레드가 보내 준 원본 블록(Int16)과
 // 재생 구간 목록(segments)만 들고, 구간마다 페이드를 곱해 더한다.
+import { fadeGain } from './fades.js';
+
 const BLOCK = 32768;
 const KEY = 65536;   // 블록 이름: 음원 번호 * KEY + 블록 번호
 const HALF_PI = Math.PI / 2;
@@ -20,7 +22,7 @@ class TrackPlayer extends AudioWorkletProcessor {
       if (m.type === 'block') this.blocks.set(m.b, m.data);
       else if (m.type === 'drop') for (const b of m.list) this.blocks.delete(b);
       else if (m.type === 'segs') this.segs = m.segs;
-      else if (m.type === 'play') { this.playing = true; this.startCtx = m.ctxFrame; this.startPos = m.pos; this.loop = m.loop; }
+      else if (m.type === 'play') { this.playing = true; this.startCtx = m.ctxFrame; this.startPos = m.pos; this.loop = m.loop; this.range = m.range; }
       else if (m.type === 'stop') this.playing = false;
       else if (m.type === 'clear') this.blocks.clear();
     };
@@ -44,6 +46,7 @@ class TrackPlayer extends AudioWorkletProcessor {
       let l = 0, r = 0;
       if (rel >= 0) {
         const pos = this.mapPos(this.startPos + rel);
+        if (this.range && pos >= this.range.b) { Lo[i] = 0; Ro[i] = 0; continue; }
         for (const s of this.segs) {
           if (pos < s.start || pos >= s.end) continue;
           const src = s.src + (pos - s.start);
@@ -61,6 +64,10 @@ class TrackPlayer extends AudioWorkletProcessor {
           const vl = data[k];
           l += vl * g;
           r += (ch === 2 ? data[k + 1] : vl) * g;
+        }
+        if (this.range?.fadeInput) {
+          const g = fadeGain(pos, this.range);
+          l *= g; r *= g;
         }
       }
       Lo[i] = l; Ro[i] = r;
