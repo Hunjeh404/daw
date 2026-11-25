@@ -1,5 +1,6 @@
-// 정렬된 스테레오 믹스를 공통 마스크로 분배한다. 한 블록의 PCM과 겹침 구간만 메모리에 둔다.
+// 정렬된 스테레오 믹스를 스템 가이드로 분배한다. 한 블록의 PCM과 겹침 구간만 메모리에 둔다.
 import { fft } from './stats.js';
+import { StereoWiener } from './stereo-wiener.js';
 
 const SR = 44100, N = 2048, H = N / 2, BLOCK = 32 * H;
 const windowFn = Float64Array.from({ length: N }, (_, i) => Math.sin(Math.PI * (i + 0.5) / N));
@@ -115,7 +116,7 @@ function repairWeight(partEnergy, mixEnergy, totalEnergy, bins, k) {
   return Math.min(1, (.063 - ratio) / .059) * (1 - 4 * others) * Math.min(1, partEnergy / .0001) * cancellation;
 }
 
-function writeFrame(output, bins, energies, total, denominator, midi, scratch, pos, rhythmShare) {
+function writeFrame(output, bins, energies, total, denominator, midi, scratch, pos, rhythmShare, spatial) {
   const part = output.j + 1;
   const count = bins.length - 1;
   for (let k = 0; k <= H; k++) {
@@ -141,9 +142,13 @@ function writeFrame(output, bins, energies, total, denominator, midi, scratch, p
         mixGain *= energies[part][k] / (total[k] || 1);
         stemGain = 1 - w;
       }
-      // 켤레 대칭인 실수 신호를 역변환한다. fft 함수는 정방향이므로 허수부 부호를 바꾼다.
       scratch.re[k] = mix.re[k] * mixGain + stem.re[k] * stemGain;
-      scratch.im[k] = -(mix.im[k] * mixGain + stem.im[k] * stemGain);
+      scratch.im[k] = mix.im[k] * mixGain + stem.im[k] * stemGain;
+    }
+    if (spatial) spatial.addCorrection(output.j, ch, energies[part], total, scratch);
+    // Complete the Hermitian spectrum and conjugate for the inverse FFT.
+    for (let k = 0; k <= H; k++) {
+      scratch.im[k] = -scratch.im[k];
       if (k > 0 && k < H) {
         scratch.re[N-k] = scratch.re[k];
         scratch.im[N-k] = -scratch.im[k];
@@ -174,7 +179,7 @@ function writeChunk(output, raw, channels, start, count) {
   if (output.writer.write(data, { at:start * 8 }) !== data.byteLength) throw Error('분리 음원 저장 공간이 부족합니다.');
 }
 
-async function separate({ root, sources, parts, automatic = false }) {
+async function separate({ root, sources, parts, automatic = false, stereoWiener = automatic }) {
   await checkAlignment(sources);
   const frames = sources[0].frames, width = H + 1;
   const bins = sources.map(() => [spectrum(), spectrum()]);
@@ -185,6 +190,8 @@ async function separate({ root, sources, parts, automatic = false }) {
   // MIDI가 있는 리듬 악기들의 기존 총 몫만 재분배한다. 보컬과 나머지 악기의 마스크는 고정한다.
   const guided = parts.map(p => !!p.notes?.length && ['bass', 'drums', 'perc'].includes(p.kind));
   const rhythmShare = new Float64Array(width);
+  const spatial = automatic && stereoWiener && sources[0].ch === 2 && sources.slice(1).some(s => s.ch === 2)
+    ? new StereoWiener(sources, width) : null;
   const modes = automatic ? ['auto'] : parts.some(p => p.notes?.length) ? ['wav','repair','midi'] : ['wav','repair'];
   const outputs = [], created = [];
   try {
@@ -240,8 +247,9 @@ async function separate({ root, sources, parts, automatic = false }) {
           const group = rhythmShare[k];
           rhythmShare[k] = group > 0 ? group / (group + denominator[k]) : 1;
         }
+        spatial?.prepare(bins, energies, total);
         previous.set(mix);
-        for (const output of outputs) writeFrame(output, bins, energies, total, denominator, midi, scratch, pos, rhythmShare);
+        for (const output of outputs) writeFrame(output, bins, energies, total, denominator, midi, scratch, pos, rhythmShare, spatial);
       }
       for (const output of outputs) writeChunk(output, input[output.j+1], sources[output.j+1].ch, start, count);
       postMessage({ progress:(start+count)/frames });

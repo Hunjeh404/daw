@@ -28,7 +28,8 @@ export async function rebuildGuided(E, status) {
   });
   status('원곡과 스템의 길이·파형 정렬 확인 중');
   const { parts } = E.guided;
-  const outputs = await runWorker({ root: E.root, sources, parts, automatic: !!E.guided.automatic }, status);
+  const outputs = await runWorker({ root: E.root, sources, parts, automatic: !!E.guided.automatic,
+    stereoWiener: E.guided.separation === 'stereo-wiener-v1' }, status);
   const staged = [];
   try {
     for (const out of outputs) {
@@ -91,7 +92,7 @@ export async function importGuided(E, reference, zip, status) {
       }
       parts.push(part);
     }
-    E.guided = { reference: ref.sid, parts, automatic: true }; stage = true;
+    E.guided = { reference: ref.sid, parts, automatic: true, separation: 'stereo-wiener-v1' }; stage = true;
     await rebuildGuided(E, status);
     for (const p of parts) {
       const s = E.sources.get(p.sid);
