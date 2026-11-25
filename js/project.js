@@ -83,7 +83,7 @@ export function applyProject(E, p0) {
     E.updateSegs(t);
   }
   Object.assign(E.mm, structuredClone(p.mm));
-  E.mode = p.mode === 'ref' && !E.guided && !p.tracks.some((t) => t.mix.ref) ? 'apply' : p.mode || 'apply';
+  E.mode = p.mode === 'ref' && E.hasRef ? 'ref' : 'apply';
   E.loop = { ...p.loop };
   E.ana = { ...p.ana };
   if (E.exp) Object.assign(E.exp, { ...p.exp, off: new Set(p.exp.off || []), b: p.exp.b ?? null, tail: p.exp.tail ?? 1, tailAuto: p.exp.tailAuto ?? true });

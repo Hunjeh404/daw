@@ -28,7 +28,7 @@ export async function rebuildGuided(E, status) {
   });
   status('원곡과 스템의 길이·파형 정렬 확인 중');
   const { parts } = E.guided;
-  const outputs = await runWorker({ root: E.root, sources, parts }, status);
+  const outputs = await runWorker({ root: E.root, sources, parts, automatic: !!E.guided.automatic }, status);
   const staged = [];
   try {
     for (const out of outputs) {
@@ -52,7 +52,7 @@ export async function rebuildGuided(E, status) {
   E.applyAll();
 }
 
-export async function importGuided(E, reference, zip, status, useMidi = true) {
+export async function importGuided(E, reference, zip, status) {
   if (E.tracks.length || E.guided) throw Error('프로젝트 메뉴에서 새 프로젝트를 연 뒤 불러오세요.');
   const entries = (await listZip(zip)).filter(e => !/(^|\/)(__MACOSX\/|\._)/.test(e.name));
   const wavs = entries.filter(e => /\.wav$/i.test(e.name));
@@ -60,15 +60,14 @@ export async function importGuided(E, reference, zip, status, useMidi = true) {
   const names = wavs.map(e => stemName(e.name));
   if (new Set([...names, stemName(reference.name)]).size !== names.length+1)
     throw Error('파일 이름이 겹칩니다. 원곡과 각 스템의 이름을 구분하세요.');
-  const mids = new Map(entries.filter(e => useMidi && /\.midi?$/i.test(e.name)).map(e => [stemName(e.name), e]));
+  const mids = new Map(entries.filter(e => /\.midi?$/i.test(e.name)).map(e => [stemName(e.name), e]));
   const created = [], parts = [];
   let stage = false;
   try {
     status('원곡 WAV 읽는 중');
     const ref = await E.addSource(stemName(reference.name), await reference.arrayBuffer(), { float: true });
     created.push(ref);
-    const willUseMidi = names.some(n => mids.has(n) && ['drums','bass','perc'].includes(category(shortName(n))));
-    const required = ref.frames * 8 * wavs.length * (willUseMidi ? 4 : 3);
+    const required = ref.frames * 8 * wavs.length * 2;
     const quota = await navigator.storage.estimate();
     if (quota.quota && quota.quota - quota.usage < required) {
       throw Error('이 곡을 처리하려면 브라우저 저장공간 약 ' + ((required + ref.file.size)/1e9).toFixed(1) + ' GB가 필요합니다. 공간을 확보하거나 더 짧은 구간을 선택하세요.');
@@ -78,15 +77,21 @@ export async function importGuided(E, reference, zip, status, useMidi = true) {
       status('가이드 스템 ' + (j+1) + '/' + wavs.length + ' · ' + label);
       const s = await E.addSource(name, await readEntry(zip, entry), { float: true });
       created.push(s);
-      const part = { sid: s.sid, trackId: crypto.randomUUID(), version: 'repair', label };
+      const part = { sid: s.sid, trackId: crypto.randomUUID(), version: 'auto', label };
       if (mids.has(name) && ['bass','drums','perc'].includes(cat)) {
-        const midi = parseMidi(new Uint8Array(await readEntry(zip, mids.get(name))));
-        part.kind = cat === 'bass' ? 'bass' : 'drums';
-        part.notes = midi.notes.map(({ t, end, note }) => ({ t, end, note }));
+        try {
+          const midi = parseMidi(new Uint8Array(await readEntry(zip, mids.get(name))));
+          const duration = ref.frames / E.ctx.sampleRate;
+          part.notes = midi.notes.filter(n => n.t >= 0 && n.t < duration && n.end > n.t)
+            .map(({ t, end, note }) => ({ t, end, note }));
+          part.kind = cat;
+        } catch {
+          // MIDI는 선택 입력이다. 읽을 수 없는 파트도 WAV를 기반으로 분리한다.
+        }
       }
       parts.push(part);
     }
-    E.guided = { reference: ref.sid, parts }; stage = true;
+    E.guided = { reference: ref.sid, parts, automatic: true }; stage = true;
     await rebuildGuided(E, status);
     for (const p of parts) {
       const s = E.sources.get(p.sid);

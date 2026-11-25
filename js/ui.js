@@ -11,6 +11,7 @@ export function slider({ label, min, max, step, get, set, show, unit, noUndo, ed
   row.querySelector('label').textContent = label;
   const r = row.querySelector('input'), v = row.querySelector('.val');
   Object.assign(r, { min, max, step });
+  r.setAttribute('aria-label', label);
   r.value = get();
   const paint = () => { v.textContent = show(+r.value) + (unit ? ' ' + unit : ''); };
   paint();

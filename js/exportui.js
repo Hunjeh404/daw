@@ -62,7 +62,7 @@ export function initExport({ engine: E, flash, sub, setBusy, onStop }) {
 
     // 출력 범위
     const c1 = card('출력 범위');
-    c1.appendChild(segmented([['mix', '전체 믹스'], ['stems', '트랙별']], st.scope, (v) => { st.scope = v; render(); }));
+    c1.appendChild(segmented([['mix', '완성곡 한 파일'], ['stems', '스템별 ZIP']], st.scope, (v) => { st.scope = v; render(); }));
     const inc = included();
     const pick = document.createElement('button');
     pick.className = 'xrow';
@@ -81,7 +81,7 @@ export function initExport({ engine: E, flash, sub, setBusy, onStop }) {
       }
     }
     if (E.missingSources.length) note(c1, `연결 안 된 음원 ${E.missingSources.length}개의 조각은 빠집니다.`);
-    if (E.guided && st.scope === 'mix') note(c1, inc.length === live().length && E.commonLayout()
+    if (E.guided && !E.guided.automatic && st.scope === 'mix') note(c1, inc.length === live().length && E.commonLayout()
       ? '전체 선택 시 원곡에 트랙 편집과 효과로 생긴 차이를 더합니다.'
       : '일부 트랙만 선택했거나 클립 배치가 다르면 해당 스템과 그 효과를 합칩니다.');
     if (st.scope === 'stems') note(c1, '트랙마다 트랙 믹싱 설정과 그 트랙의 리버브까지 넣고, 마스터는 입력 음량만 적용합니다. 0dB를 넘으면 모든 트랙을 같은 만큼 낮춥니다. 파일들은 zip 하나로 묶습니다.');

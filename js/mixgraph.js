@@ -14,14 +14,14 @@ export const trackDefaults = () => ({
 });
 
 export const masterDefaults = () => ({
-  low: { on: true, hz: 30 },
+  low: { on: false, hz: 30 },
   eq: { on: false, low: 0, mid: 0, high: 0 },
   tone: { on: false, amt: 0.7, mid: null, side: null },   // 원곡 음색 맞추기 곡선 (dB, TONE_F 지점마다)
-  space: { on: true, width: 1, monoHz: 120 },
+  space: { on: false, width: 1, monoHz: 120 },
   spread: 'some',         // 넓이: orig | some | wide
   tamer: { on: false, mid: 0, air: 0 },
   glue: { on: false, amt: 0 },
-  lim: { on: true, target: -14, ceil: -1, gainDb: 0 },
+  lim: { on: false, target: -14, ceil: -1, gainDb: 0 },
   verb: { on: true, size: 1.8, ret: 0, duck: { on: false, depth: 4 } },
 });
 
@@ -48,6 +48,15 @@ export function buildTrackChain(ctx, p0) {
   fx.connect(pan).connect(fader);
   fader.connect(send);
   return { input: trim, trim, hp, ls, pk, hs, fx, pan, fader, send, out: fader };
+}
+
+// 전역 공간감은 개별 트랙 설정 위에 적용한다. 원래의 보컬·드럼·베이스 위치는 유지한다.
+const stagePan = { guitar: -.14, keys: .12, strings: .10, perc: -.08, backing: .08, synth: -.10, brass: -.08, wood: .08 };
+export function spatialMix(track, master) {
+  const offset = stagePan[track.cat];
+  if (!master.wider || !offset || track.mix.ref) return track.mix;
+  return { ...track.mix, width: (track.mix.width ?? 1) * 1.06,
+    pan: Math.max(-1, Math.min(1, (track.mix.pan || 0) + offset)) };
 }
 
 export function trackFxParams(m, raw, ref) {

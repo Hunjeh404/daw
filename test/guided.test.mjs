@@ -15,7 +15,7 @@ const mix = a.map((x,i) => x + b[i]);
 const guides = [a.map((x,i) => x+extra[i]+cancel[i]), b.map((x,i) => x-cancel[i])];
 const source = samples => ({ file:new Blob([samples]), frames:samples.length/2, ch:2, float:true, scale:1 });
 
-async function run(sources, parts) {
+async function run(sources, parts, automatic = false) {
   const files = new Map();
   // Same worker entry and byte offsets as OPFS, with in-memory file handles for the test.
   const root = {
@@ -33,7 +33,7 @@ async function run(sources, parts) {
   globalThis.self = {};
   globalThis.postMessage = msg => { if (!('progress' in msg)) result = msg; };
   await import('../js/guided-worker.js?test='+Math.random());
-  await self.onmessage({ data:{ root, sources:sources.map(source), parts } });
+  await self.onmessage({ data:{ root, sources:sources.map(source), parts, automatic } });
   if (result.error) throw Error(result.error);
   return result.outputs.map(o => ({ ...o, data:files.get(o.id+'.pcm') }));
 }
@@ -68,4 +68,34 @@ test('different audio with the same duration is rejected', async () => {
 
 test('unequal duration is rejected', async () => {
   await assert.rejects(run([mix.subarray(0,-2),...guides], [{},{}]), /길이/);
+});
+
+
+test('automatic MIDI redistributes only the eligible rhythm group and keeps the stereo sum', async () => {
+  const sources = [mix, a, a, b];
+  const baseline = await run(sources, [{},{},{}], true);
+  const parts = [{ kind:'bass', notes:[{ t:0, end:2, note:45 }] },
+    { kind:'drums', notes:[{ t:0, end:.1, note:36 }] }, { kind:'vocal', notes:[{ t:0, end:2, note:45 }] }];
+  const out = await run(sources, parts, true);
+  assert.equal(out.length, 3);
+  assert.deepEqual(out[2].data, baseline[2].data);
+  let change = 0, error = 0;
+  for (let i = 0; i < mix.length; i++) {
+    change = Math.max(change, Math.abs(out[0].data[i] - baseline[0].data[i]));
+    error = Math.max(error, Math.abs(out[0].data[i] + out[1].data[i] + out[2].data[i] - mix[i]));
+  }
+  assert.ok(change > .0001);
+  assert.ok(error < 1e-6);
+  const missingMidi = await run(sources, [parts[0], { kind:'drums' }, {}], true);
+  assert.deepEqual(missingMidi[1].data, baseline[1].data);
+});
+
+test('global width preserves lead, bass and drums and is reversible for accompaniment', async () => {
+  const { spatialMix, trackDefaults } = await import('../js/mixgraph.js');
+  const mix = trackDefaults();
+  for (const cat of ['vocal','bass','drums']) assert.equal(spatialMix({ cat, mix }, { wider:true }), mix);
+  const track = { cat:'guitar', mix };
+  assert.ok(spatialMix(track, { wider:true }).width > 1);
+  assert.equal(spatialMix(track, {}).pan, 0);
+  assert.equal(mix.width, 1);
 });
