@@ -101,6 +101,21 @@ $('relinkFile').onchange = (e) => { const f = [...e.target.files]; e.target.valu
 let demixAbort;
 const dialog = $('guidedDialog');
 const guidedStatus = text => { $('guidedStatus').textContent = text; sub(text); };
+// A killed tab cannot catch the failure. A restored tab can report the last
+// stage without retaining a filename, audio, or a job that restarts on its own.
+const stageKey = 'daw-separation-stage';
+function reportSeparation(text) {
+  guidedStatus(text);
+  try { sessionStorage.setItem(stageKey, text); } catch {}
+}
+try {
+  const interrupted = sessionStorage.getItem(stageKey);
+  if (interrupted) {
+    sessionStorage.removeItem(stageKey);
+    guidedStatus('지난 분리가 중단된 단계 · ' + interrupted + '. 원곡 WAV를 다시 선택하세요.');
+    dialog.showModal();
+  }
+} catch {}
 $('guidedLoad').onclick = () => {
   if (loading || busy) return;
   if (engine.tracks.length) { flash('프로젝트 메뉴에서 새 프로젝트를 연 뒤 스템 분리를 선택하세요.'); return; }
@@ -124,11 +139,12 @@ async function loadGuided(ref, zip) {
   }
   for (const input of $('guidedForm').elements) input.disabled = !!zip || input !== $('guidedClose');
   try {
+    reportSeparation('원곡 WAV 준비 중');
     await cleared; await engine.init(); engine.stop();
-    if (zip) await importGuided(engine, ref, zip, guidedStatus);
+    if (zip) await importGuided(engine, ref, zip, reportSeparation);
     else {
       const { importDemix } = await import('./demix.js');
-      await importDemix(engine, ref, guidedStatus, demixAbort.signal);
+      await importDemix(engine, ref, reportSeparation, demixAbort.signal);
     }
     for (const t of engine.tracks) renderTrack(t);
     orderRows(); fitZoom(); afterChange(); renderCompare(); paintRelink();
@@ -138,11 +154,16 @@ async function loadGuided(ref, zip) {
     flash('스템 준비 완료');
   } catch (err) {
     if (demixAbort?.signal.aborted) { dialog.close(); sub('스템 분리를 취소했습니다.'); return; }
-    guidedStatus(err.name === 'QuotaExceededError' ? '브라우저 저장공간이 부족합니다. 공간을 확보한 뒤 다시 시도하세요.' : err.message);
+    let message = err.message;
+    if (err.name === 'QuotaExceededError') message = '브라우저 저장공간이 부족합니다. 공간을 확보한 뒤 다시 시도하세요.';
+    else if (!zip && /out of memory|bad_alloc|failed to allocate|allocation failed|cannot enlarge memory/i.test(message))
+      message = '분리할 메모리가 부족합니다. 같은 곡의 수노 스템 ZIP을 함께 선택하면 AI 모델 없이 분리할 수 있습니다.';
+    guidedStatus(message);
     if (!dialog.open) dialog.showModal();
   } finally {
     loading = engine.loading = false;
     demixAbort = null;
+    try { sessionStorage.removeItem(stageKey); } catch {}
     $('guidedClose').textContent = '닫기';
     for (const input of $('guidedForm').elements) input.disabled = false;
     refreshTabs();
@@ -177,7 +198,7 @@ async function loadFiles(files, relink) {
         }
       } catch (err) { flash(f.name + ': ' + err.message); return; }
     } else if (isAudio(f.name)) {
-      jobs.push({ name: baseName(f.name), wav: /\.wav$/i.test(f.name), get: () => f.arrayBuffer() });
+      jobs.push({ name: baseName(f.name), wav: /\.wav$/i.test(f.name), get: () => f });
     }
   }
   if (!jobs.length) { flash('WAV 또는 MP3가 필요합니다. MIDI는 원곡 재분리에서 스템과 함께 사용합니다.'); return; }

@@ -63,13 +63,17 @@ export async function listZip(file) {
   return entries;
 }
 
-export async function readEntry(file, entry) {
+export async function readEntryBlob(file, entry) {
   const h = await view(file, entry.localOff, entry.localOff + 30);
   const start = entry.localOff + 30 + h.getUint16(26, true) + h.getUint16(28, true);
   const blob = file.slice(start, start + entry.compSize);
-  if (entry.method === 0) return blob.arrayBuffer();
+  if (entry.method === 0) return blob;
   if (entry.method === 8) {
-    return new Response(blob.stream().pipeThrough(new DecompressionStream('deflate-raw'))).arrayBuffer();
+    return new Response(blob.stream().pipeThrough(new DecompressionStream('deflate-raw'))).blob();
   }
   throw new Error('지원하지 않는 압축 방식: ' + entry.name);
+}
+
+export async function readEntry(file, entry) {
+  return (await readEntryBlob(file, entry)).arrayBuffer();
 }

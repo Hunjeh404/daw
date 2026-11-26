@@ -1,23 +1,29 @@
 // Four-second model windows. Only one window and its overlap are resident per stem.
 import { stftStereo, istftBatch } from './vendor/bs-roformer/stft.js';
 
-const modelFile = 'bs_roformer_sw_6stem_fp16.onnx';
-const modelRev = 'a744f80957374e1735ad70fa122670b7961da8cc';
-const modelSize = 352778874;
-const modelUrl = 'https://huggingface.co/elicwhite/bs-roformer-sw-6stem-onnx/resolve/' + modelRev + '/' + modelFile;
-const runtime = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.0-dev.20251116-b39e144322/dist/';
-const length = 176400, overlap = 44100, step = length - overlap;
+import { mobileModel } from './demix-models.js';
+import { mobileLength, predictMobile } from './demucs-mobile.js';
+
+const desktop = {
+  repo: 'elicwhite/bs-roformer-sw-6stem-onnx', rev: 'a744f80957374e1735ad70fa122670b7961da8cc',
+  file: 'bs_roformer_sw_6stem_fp16.onnx', size: 352778874,
+};
+const mobile = {
+  repo: 'Andremi/audioweb-models', rev: '953d0a9e46fd364860c9413ee4c7a9aa4fbcae4b',
+  file: 'demucs_htdemucs_6s_s39_fp16w_ca.onnx', size: 56835345,
+};
+const desktopLength = 176400, overlap = 44100;
 const transform = { nFft: 2048, winLength: 2048, hopLength: 512 };
 const status = message => self.postMessage({ status: message });
 
-async function modelBytes() {
+async function modelBytes({ repo, rev, file, size }) {
   const root = await navigator.storage.getDirectory();
   const cache = await root.getDirectoryHandle('roformer-models', { create: true });
-  return navigator.locks.request('daw-' + modelRev, async () => {
-    const handle = await cache.getFileHandle(modelRev + '.onnx', { create: true });
-    if ((await handle.getFile()).size !== modelSize) {
-      status('분리 모델 다운로드 준비 중 · 첫 실행 약 337 MiB');
-      const res = await fetch(modelUrl);
+  return navigator.locks.request('daw-' + rev, async () => {
+    const handle = await cache.getFileHandle(rev + '.onnx', { create: true });
+    if ((await handle.getFile()).size !== size) {
+      status('분리 모델 다운로드 준비 중 · '+Math.round(size/1048576)+' MiB');
+      const res = await fetch('https://huggingface.co/'+repo+'/resolve/'+rev+'/'+file);
       if (!res.ok) throw Error('분리 모델 다운로드 실패 (' + res.status + '). 다시 시도하세요.');
       const writer = await handle.createWritable(), reader = res.body.getReader();
       let loaded = 0, last = -1;
@@ -27,11 +33,11 @@ async function modelBytes() {
           if (done) break;
           await writer.write(value);
           loaded += value.length;
-          const percent = Math.floor(loaded / modelSize * 100);
+          const percent = Math.floor(loaded / size * 100);
           if (percent !== last) status('분리 모델 다운로드 ' + percent + '%');
           last = percent;
         }
-        if (loaded !== modelSize) throw Error('분리 모델 다운로드가 중단되었습니다. 다시 시도하세요.');
+        if (loaded !== size) throw Error('분리 모델 다운로드가 중단되었습니다. 다시 시도하세요.');
         await writer.close();
       } catch (err) {
         await writer.abort().catch(() => {});
@@ -54,7 +60,7 @@ async function predict(ort, session, planar) {
     if (r.length !== expected || i.length !== expected) throw Error('분리 모델 출력 형식을 확인하세요.');
     // ORT can return a view with a nonzero offset in its own heap.
     const result = istftBatch({ realBuf: r, imagBuf: i, numStems: 6, numChannels: 2,
-      F, T, length, ...transform });
+      F, T, length: desktopLength, ...transform });
     return new Float32Array(result.audioBuf);
   } finally {
     re.dispose(); im.dispose();
@@ -62,29 +68,31 @@ async function predict(ort, session, planar) {
   }
 }
 
-async function demix({ root, ref, ids }) {
-  const ort = await import(runtime + 'ort.all.min.mjs');
+async function demix({ root, ref, ids, model, cpuOnly }) {
+  const light = model === mobileModel;
+  const length = light ? mobileLength : desktopLength, step = length-overlap;
+  const runtime = light ? 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.2/dist/'
+    : 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.0-dev.20251116-b39e144322/dist/';
+  const ort = await import(runtime + (light ? 'ort.wasm.min.mjs' : 'ort.all.min.mjs'));
   ort.env.wasm.wasmPaths = runtime;
   ort.env.wasm.numThreads = 1;
-  const adapter = await navigator.gpu?.requestAdapter().catch(() => null);
+  const adapter = !light && !cpuOnly && await navigator.gpu?.requestAdapter().catch(() => null);
   const create = async providers => {
-    const bytes = await modelBytes();
-    status('6스템 분리 모델 준비 중');
-    return ort.InferenceSession.create(bytes, {
-      executionProviders: providers, graphOptimizationLevel: 'disabled',
-    });
-  };
-  let session, usingGPU = false;
-  if (adapter) {
+    const bytes = await modelBytes(light ? mobile : desktop);
+    status((light ? '모바일 ' : '') + '6스템 분리 모델 준비 중');
     try {
-      session = await create(['webgpu','wasm']);
-      usingGPU = true;
+      return await ort.InferenceSession.create(bytes, {
+        executionProviders: providers, graphOptimizationLevel: light ? 'basic' : 'disabled',
+        ...(light ? { enableCpuMemArena: false, enableMemPattern: false } : {}),
+      });
     } catch (err) {
-      if (err.name === 'QuotaExceededError' || err instanceof TypeError) throw err;
+      if (adapter) throw Object.assign(new Error(String(err.message || err)), { retryCPU: true });
+      throw err;
     }
-  }
-  if (!session) session = await create(['wasm']);
-  const writers = [], names = [];
+  };
+  const session = await create(adapter ? ['webgpu','wasm'] : ['wasm']);
+  const infer = light ? predictMobile : predict;
+  const files = [], names = [];
   const peaks = ids.map(() => new Float32Array(Math.ceil(ref.frames / 1024)));
   const tails = ids.map(() => new Float32Array(overlap * 2));
   try {
@@ -92,7 +100,7 @@ async function demix({ root, ref, ids }) {
       const name = id + '.pcm';
       const handle = await root.getFileHandle(name, { create: true });
       names.push(name);
-      writers.push(await handle.createSyncAccessHandle());
+      files.push(handle);
     }
     for (let pos = 0; pos < ref.frames; pos += step) {
       const count = Math.min(length, ref.frames - pos);
@@ -104,14 +112,10 @@ async function demix({ root, ref, ids }) {
       }
       status('보컬·악기 분리 중 · ' + (Math.floor(pos/step)+1) + '/' + Math.max(1, Math.ceil((ref.frames-overlap)/step)) + ' 구간');
       let result;
-      try { result = await predict(ort, session, planar); }
+      try { result = await infer(ort, session, planar); }
       catch (err) {
-        if (!usingGPU) throw err;
-        await session.release();
-        usingGPU = false;
-        status('CPU에서 분리를 이어가는 중');
-        session = await create(['wasm']);
-        result = await predict(ort, session, planar);
+        if (adapter) throw Object.assign(new Error(String(err.message || err)), { retryCPU: true });
+        throw err;
       }
       const last = pos + count === ref.frames;
       const commit = last ? count : step;
@@ -135,19 +139,22 @@ async function demix({ root, ref, ids }) {
             peaks[stem][pk] = Math.max(peaks[stem][pk], Math.abs(sample));
           }
         }
-        if (writers[stem].write(pcm, { at: pos*8 }) !== pcm.byteLength) throw Error('분리 음원 저장 공간이 부족합니다.');
+        // Release file locks before the next inference. A cancelled WASM call
+        // may take seconds to terminate on a phone.
+        const writer = await files[stem].createSyncAccessHandle();
+        try {
+          if (writer.write(pcm, { at: pos*8 }) !== pcm.byteLength) throw Error('분리 음원 저장 공간이 부족합니다.');
+        } finally { writer.close(); }
       }
       if (last) break;
     }
-    for (const w of writers) { w.flush(); w.close(); }
     return peaks;
   } catch (err) {
-    for (const w of writers) { try { w.close(); } catch {} }
     await Promise.all(names.map(n => root.removeEntry(n).catch(() => {})));
     throw err;
   } finally { await session.release(); }
 }
 self.onmessage = async ({ data }) => {
   try { self.postMessage({ peaks: await demix(data) }); }
-  catch (err) { self.postMessage({ error: String(err?.message || err) }); }
+  catch (err) { self.postMessage({ error: String(err?.message || err), name: err.name, retryCPU: !!err.retryCPU }); }
 };

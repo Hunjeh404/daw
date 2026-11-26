@@ -1,5 +1,5 @@
 // 원곡과 가이드 스템은 항상 보존하고, 다시 만들 수 있는 분리 파일만 별도 보관한다.
-import { listZip, readEntry } from './zip.js';
+import { listZip, readEntry, readEntryBlob } from './zip.js';
 import { parseMidi } from './midi.js';
 import { category, colorFor } from './cats.js';
 import { newClipId } from './engine.js';
@@ -70,7 +70,7 @@ export async function importGuided(E, reference, zip, status) {
   let stage = false;
   try {
     status('원곡 WAV 읽는 중');
-    const ref = await E.addSource(stemName(reference.name), await reference.arrayBuffer(), { float: true });
+    const ref = await E.addSource(stemName(reference.name), reference, { float: true });
     created.push(ref);
     const required = ref.frames * 8 * wavs.length * 2;
     const quota = await navigator.storage.estimate();
@@ -80,7 +80,7 @@ export async function importGuided(E, reference, zip, status) {
     for (const [j, entry] of wavs.entries()) {
       const name = names[j], label = shortName(name), cat = category(label);
       status('가이드 스템 ' + (j+1) + '/' + wavs.length + ' · ' + label);
-      const s = await E.addSource(name, await readEntry(zip, entry), { float: true });
+      const s = await E.addSource(name, await readEntryBlob(zip, entry), { float: true });
       created.push(s);
       const part = { sid: s.sid, trackId: crypto.randomUUID(), version: 'auto', label };
       if (mids.has(name) && ['bass','drums','perc'].includes(cat)) {
