@@ -7,6 +7,7 @@ import { initExport } from './exportui.js';
 import { initProjects } from './projectui.js';
 import { matchSource } from './project.js';
 import { importGuided, rebuildGuided } from './guided.js';
+import { detectTones } from './fixedtone.js';
 import { renderMidi } from './instrument.js';
 
 const engine = new Engine();
@@ -807,7 +808,7 @@ engine.onEnd = () => { updatePlayBtn(); redraw(); };
 
 // ---------- 믹싱 탭 ----------
 const mix = initMix({
-  engine, pushUndo,
+  engine, pushUndo, rescanFixed: () => refreshTabs(),
   undo: () => $('undo').click(), redo: () => $('redo').click(),
   onChange: () => { renderCompare(); for (const t of engine.tracks) updateHead(t); renderPanel(); redraw(); },
 });
@@ -881,7 +882,22 @@ function renderCompare() {
 
 // ---------- 탭 ----------
 // 불러오는 동안에는 믹싱·내보내기 탭이 아무 작업도 시작하지 않게 안내만 보인다
+// 고정음: 음원이 다 준비되면 한 번 찾아 두고(프로젝트에 같이 저장), 기본으로 제거한다
+let fixedJob = null;
+function ensureFixed() {
+  if (fixedJob || loading || engine.loading || engine.guidedPending || !engine.tracks.length || engine.mm.fixed?.scanned) return;
+  engine.mm.fixed = { on: true, tones: [], scanned: false, busy: true };
+  const mm = engine.mm;
+  fixedJob = detectTones(engine).catch(() => []).then((tones) => {
+    fixedJob = null;
+    if (engine.mm !== mm) return;             // 그사이 새 프로젝트
+    engine.mm.fixed = { on: true, tones, scanned: true };
+    engine.applyAll();
+    refreshTabs();
+  });
+}
 function refreshTabs() {
+  ensureFixed();
   const on = document.querySelector('nav button.on')?.dataset.tab;
   if (on === 'mix') mix.render();
   if (on === 'export') exp.render();
@@ -890,7 +906,7 @@ for (const b of document.querySelectorAll('nav button')) {
   b.onclick = () => {
     for (const x of document.querySelectorAll('nav button')) x.classList.toggle('on', x === b);
     for (const s of document.querySelectorAll('.tab')) s.classList.toggle('show', s.id === 'tab-' + b.dataset.tab);
-    if (engine.monitor && b.dataset.tab !== 'mix') { engine.monitor = null; engine.applyAll(); }
+    if ((engine.monitor || engine.fixedListen != null) && b.dataset.tab !== 'mix') { engine.monitor = null; engine.fixedListen = null; engine.applyAll(); }
     if (b.dataset.tab === 'mix') { if (sel) mix.select(sel.t); mix.render(); }
     if (b.dataset.tab === 'export') { engine.setMode('apply'); exp.render(); }
     exp.setActive(b.dataset.tab === 'export');

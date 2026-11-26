@@ -1,6 +1,7 @@
 // 트랙·마스터 처리 연결. 실시간 재생과 파일 만들기(오프라인)가 같은 구성을 쓴다.
 import { dbToLin } from './dsp.js';
 import { toneFir } from './tone.js';
+import { MAX_TONES } from './fixedtone.js';
 
 export const trackDefaults = () => ({
   ref: false,
@@ -107,7 +108,17 @@ export function buildMaster(ctx, dest, mm) {
   const hs = biquad(ctx, 'highshelf', EQF.high, 0.7);
   const mfx = new AudioWorkletNode(ctx, 'master-fx', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2], processorOptions: { p: mm ? masterFxParams(mm, false) : undefined } });
   const match = ctx.createGain();
-  sum.connect(hp).connect(ls).connect(pk).connect(hs);
+  // 고정음 제거: 찾은 주파수마다 아주 좁은 대역만 솟은 만큼 깎는다 (fixA).
+  // 제거된 음만 듣기: 입력 − 깎은 소리 = 깎여 나간 소리 (fixB는 들어볼 음만 깎는 별도 묶음)
+  const notch = () => { const n = biquad(ctx, 'peaking', 8000, 800); n.gain.value = 0; return n; };
+  const fixA = Array.from({ length: MAX_TONES }, notch), fixB = Array.from({ length: MAX_TONES }, notch);
+  fixA.reduce((prev, n) => prev.connect(n), sum).connect(hp);
+  const rNegB = ctx.createGain(), rBus = ctx.createGain(), rOut = ctx.createGain();
+  rNegB.gain.value = -1; rOut.gain.value = 0;
+  fixB.reduce((prev, n) => prev.connect(n), sum).connect(rNegB).connect(rBus);
+  sum.connect(rBus);
+  rBus.connect(rOut).connect(dest);
+  hp.connect(ls).connect(pk).connect(hs);
   // 원곡 음색 맞추기: 미드·사이드로 나눠 각각 FIR을 거친 뒤 다시 좌우로. 꺼져 있으면 dry로만
   const mono = (g = 1) => { const n = ctx.createGain(); n.gain.value = g; n.channelCount = 1; n.channelCountMode = 'explicit'; return n; };
   const split = ctx.createChannelSplitter(2);
@@ -141,7 +152,7 @@ export function buildMaster(ctx, dest, mm) {
   const vocalKey = ctx.createGain();
   vocalKey.connect(vduck, 0, 1);
   const drumKey = ctx.createGain();
-  return { sum, hp, ls, pk, hs, mfx, match, vin, conv, vduck, vret, vocalKey, drumKey, verbSize: 0, cM, cS, toneWet, toneDry, toneKey: '' };
+  return { sum, hp, ls, pk, hs, mfx, match, vin, conv, vduck, vret, vocalKey, drumKey, verbSize: 0, cM, cS, toneWet, toneDry, toneKey: '', fixA, fixB, rOut };
 }
 
 export function makeIR(ctx, seconds) {
@@ -162,7 +173,8 @@ export function makeIR(ctx, seconds) {
   return buf;
 }
 
-export function applyMaster(M, mm, raw, ctx, matchDb, now) {
+// listen: 고정음 제거된 음만 듣기 — null(끔) | 'all'(지금 제거하는 음 전부) | 번호(그 음 하나)
+export function applyMaster(M, mm, raw, ctx, matchDb, now, listen = null) {
   const set = setter(ctx, now);
   const on = !raw;
   set(M.hp.frequency, on && mm.low.on ? mm.low.hz : 0);
@@ -175,7 +187,16 @@ export function applyMaster(M, mm, raw, ctx, matchDb, now) {
   }
   if (M.verbSize !== mm.verb.size) { M.verbSize = mm.verb.size; M.conv.buffer = makeIR(ctx, mm.verb.size); }
   set(M.vret.gain, on && mm.verb.on !== false ? dbToLin(mm.verb.ret) : 0);
-  set(M.match.gain, isFinite(matchDb) ? 1 : 0);   // 원곡 비교 때는 믹스를 끈다
+  set(M.match.gain, isFinite(matchDb) && listen == null ? 1 : 0);   // 원곡 비교·제거음 듣기 때는 믹스를 끈다
+  const F = mm.fixed || {};
+  for (let i = 0; i < M.fixA.length; i++) {
+    const t = F.tones?.[i];
+    for (const n of [M.fixA[i], M.fixB[i]]) if (t) { n.frequency.value = t.f; n.Q.value = Math.max(50, t.f / 8); }
+    const cut = t ? -t.db : 0;
+    set(M.fixA[i].gain, on && F.on && t?.on ? cut : 0);
+    set(M.fixB[i].gain, !t || listen == null ? 0 : listen === 'all' ? (F.on && t.on ? cut : 0) : listen === i ? cut : 0);
+  }
+  set(M.rOut.gain, listen == null ? 0 : 4);      // 깎인 소리는 작아서 4배(+12dB)로 들려준다
   const T = mm.tone || {};
   const toneOn = on && T.on && T.mid && T.side;
   if (toneOn) {

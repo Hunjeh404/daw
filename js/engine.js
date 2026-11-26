@@ -395,13 +395,13 @@ export class Engine {
       set(t.refGain.gain, refMode && isRef && on ? dbToLin(this.refMatchDb()) : 0);
       applyTrack(t.fxc, spatialMix(t, this.mm), raw || isRef, this.ctx, t.ana?.lufs ?? -20);
     }
-    applyMaster(this.M, this.mm, raw, this.ctx, refMode || (monitor && monitor.type !== 'wet') ? -Infinity : raw && !this.guided ? this.rawMatchDb() : 0);
+    applyMaster(this.M, this.mm, raw, this.ctx, refMode || (monitor && monitor.type !== 'wet') ? -Infinity : raw && !this.guided ? this.rawMatchDb() : 0, false, this.prev ? null : this.fixedListen ?? null);
   }
   applyGains() { this.applyAll(); }
   get hasRef() { return !!this.guided || this.tracks.some((t) => t.mix.ref); }
   rawMatchDb() { const a = this.ana; return a.procLufs != null && a.rawLufs != null ? a.procLufs - a.rawLufs : 0; }
   refMatchDb() { const a = this.ana; return a.procLufs != null && a.refLufs != null ? a.procLufs - a.refLufs : 0; }
-  setMode(m) { this.mode = m; this.monitor = null; this.applyAll(); }
+  setMode(m) { this.mode = m; this.monitor = null; this.fixedListen = null; this.applyAll(); }
 
   get effLoop() { return this.prev ? { on: false, start: 0, end: 0 } : this.loop; }
 
@@ -574,7 +574,7 @@ export class Engine {
       this.bed.node.disconnect(); this.bed.direct.disconnect(); this.bed.sum.disconnect();
       this.bed = null;
     }
-    this.guided = null; this.monitor = null;
+    this.guided = null; this.monitor = null; this.fixedListen = null;
     for (const t of [...this.tracks]) await this.removeTrack(t);
     for (const src of [...this.sources.values()]) await this.removeSource(src);
     this.mm = masterDefaults();
