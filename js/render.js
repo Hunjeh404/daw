@@ -1,6 +1,6 @@
 // 오프라인 렌더링: 실시간과 같은 처리 연결로 구간을 계산한다.
 // 메모리를 아끼려고 12초씩 나눠 계산하고, 각 조각 앞의 소리를 미리 돌려 컴프·리버브 상태를 이어 붙인다.
-import { buildTrackChain, applyTrack, trackFxParams, spatialMix, buildMaster, applyMaster } from './mixgraph.js';
+import { buildTrackChain, applyTrack, trackFxParams, spatialMix, spreadShift, buildMaster, applyMaster } from './mixgraph.js';
 import { fadeBuffer } from './fades.js';
 import { readWindow } from './pcm.js';
 import { dbToLin } from './dsp.js';
@@ -40,7 +40,7 @@ export async function renderRange(E, a, b, onChunk, opt = {}) {
     }
     for (const t of use) {
       const ref = t.ana?.lufs ?? -20;
-      const mix = spatialMix(t, mm);
+      const mix = spatialMix(t, mm, spreadShift(E, mm));
       const fxc = buildTrackChain(ctx, trackFxParams(mix, false, ref));
       applyTrack(fxc, mix, false, ctx, ref, true);
       fxc.fader.gain.value = dbToLin(t.volumeDb);

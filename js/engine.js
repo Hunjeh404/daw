@@ -3,7 +3,7 @@
 // 편집은 원본을 건드리지 않고 클립(어느 음원의 어디를 타임라인 어디에 놓을지)만 바꾼다.
 // 음원(sources)과 트랙은 따로다. 트랙은 여러 음원의 조각을 담을 수 있고, 빈 트랙도 있다.
 
-import { buildTrackChain, applyTrack, buildMaster, applyMaster, spatialMix, trackDefaults, masterDefaults } from './mixgraph.js';
+import { buildTrackChain, applyTrack, buildMaster, applyMaster, spatialMix, spreadShift, trackDefaults, masterDefaults } from './mixgraph.js';
 import { fadeGain } from './fades.js';
 import { category } from './cats.js';
 import { wavLayout, decodedWavChunks } from './wav-chunks.js';
@@ -387,13 +387,14 @@ export class Engine {
     const live = this.tracks.filter((t) => !t.mix.ref);
     const anySolo = live.some((t) => t.solo);
     const P = this.prev;
+    const shift = spreadShift(this, this.mm);
     for (const t of this.tracks) {
       const on = monitor ? monitor.type === 'wet' && t.id === monitor.track : P ? !P.off.has(t.id) : !t.muted && (!anySolo || t.solo || t.mix.ref);
       const isRef = t.mix.ref;
       set(t.fxc.fader.gain, on && !isRef ? (raw ? 1 : dbToLin(t.volumeDb)) : 0);
       set(t.toSum.gain, isRef || monitor ? 0 : 1);
       set(t.refGain.gain, refMode && isRef && on ? dbToLin(this.refMatchDb()) : 0);
-      applyTrack(t.fxc, spatialMix(t, this.mm), raw || isRef, this.ctx, t.ana?.lufs ?? -20);
+      applyTrack(t.fxc, spatialMix(t, this.mm, shift), raw || isRef, this.ctx, t.ana?.lufs ?? -20);
     }
     applyMaster(this.M, this.mm, raw, this.ctx, refMode || (monitor && monitor.type !== 'wet') ? -Infinity : raw && !this.guided ? this.rawMatchDb() : 0, false, this.prev ? null : this.fixedListen ?? null);
   }

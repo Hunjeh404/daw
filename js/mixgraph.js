@@ -53,13 +53,72 @@ export function buildTrackChain(ctx, p0) {
 
 // 전역 공간감은 개별 트랙 설정 위에 적용한다. 원래의 보컬·드럼·베이스 위치는 유지한다.
 const stagePan = { guitar: -.14, keys: .12, strings: .10, perc: -.08, backing: .08, synth: -.10, brass: -.08, wood: .08 };
-export function spatialMix(track, master) {
+const spreadLevel = (master) => (master.wider === 2 ? 2 : master.wider ? 1 : 0);
+const clampPan = (p) => Math.max(-1, Math.min(1, p));
+// master.wider: false(원곡 그대로) | true(조금 넓게) | 2(넓게: 조금 넓게의 두 배)
+// shift: 옮긴 반주 악기 전체를 같이 당기는 양 (spreadShift로 구함)
+export function spatialMix(track, master, shift = 0) {
   const offset = stagePan[track.cat];
-  // master.wider: false(원곡 그대로) | true(조금 넓게) | 2(넓게: 조금 넓게의 두 배)
-  const level = master.wider === 2 ? 2 : master.wider ? 1 : 0;
+  const level = spreadLevel(master);
   if (!level || !offset || track.mix.ref) return track.mix;
   return { ...track.mix, width: (track.mix.width ?? 1) * (1 + 0.06 * level),
-    pan: Math.max(-1, Math.min(1, (track.mix.pan || 0) + offset * level)) };
+    pan: clampPan((track.mix.pan || 0) + offset * level + shift) };
+}
+
+// 넓히면서 생긴 좌우 쏠림만 없앤다: 옮긴 악기들의 크기를 가중치로, 좌우 균형이 넓히기 전과 같아지도록
+// 옮긴 악기 전체를 같은 양만큼 반대쪽으로 당긴다. 원곡이 원래 가진 쏠림은 그대로 둔다.
+// 크기는 파형 요약(peaks)의 제곱 평균 × 트랙 볼륨으로 어림한다. 패닝은 같은 세기 법칙이라 좌우 차이 ∝ sin(pan·π/2).
+const clipKey = (t) => t.clips.map((c) => `${c.sid},${c.src},${c.len}`).join(';');
+
+// 패닝은 가운데(미드) 소리만 움직이므로, 옮기는 악기마다 미드 크기를 실제 소리로 재 둔다 (불러온 뒤 한 번)
+export async function measureSpread(E, readWindow) {
+  for (const t of E.tracks) {
+    if (!stagePan[t.cat] || t.mix.ref || t.spreadKey === clipKey(t)) continue;
+    const v = E.srcView(t);
+    const segs = v.segs.filter((s) => v.srcs[s.sid]);
+    if (!segs.length) continue;
+    const a = Math.min(...segs.map((s) => s.start)), b = Math.max(...segs.map((s) => s.end));
+    const len = Math.min(44100 * 1.5, Math.floor((b - a) / 8));
+    if (len < 4410) continue;
+    let s = 0, n = 0;
+    for (let k = 0; k < 8; k++) {
+      const w0 = Math.floor(a + ((b - a - len) * k) / 7);
+      const [L, R] = await readWindow(v, w0, w0 + len);
+      for (let i = 0; i < len; i++) { const m = (L[i] + R[i]) * 0.5; s += m * m; }
+      n += len;
+    }
+    t.spreadW = s / n;
+    t.spreadKey = clipKey(t);
+  }
+}
+
+export function spreadShift(E, master) {
+  const level = spreadLevel(master);
+  if (!level) return 0;
+  const moved = [];
+  for (const t of E.tracks) {
+    const offset = stagePan[t.cat];
+    if (!offset || t.mix.ref || t.muted) continue;
+    if (t.spreadW != null && t.spreadKey === clipKey(t)) {
+      moved.push({ w: t.spreadW * dbToLin(t.volumeDb || 0) ** 2, p0: t.mix.pan || 0, p1: (t.mix.pan || 0) + offset * level });
+      continue;
+    }
+    let s = 0, n = 0;
+    for (const c of t.clips) {
+      const pk = E.sources.get(c.sid)?.peaks;
+      if (!pk) continue;
+      const k = E.sources.get(c.sid).scale || 1;
+      for (let i = Math.floor(c.src / 1024), e = Math.min(pk.length, Math.ceil((c.src + c.len) / 1024)); i < e; i++) { s += (pk[i] * k) ** 2; n++; }
+    }
+    if (!n) continue;
+    moved.push({ w: (s / n) * dbToLin(t.volumeDb || 0) ** 2, p0: t.mix.pan || 0, p1: (t.mix.pan || 0) + offset * level });
+  }
+  if (moved.length < 2) return 0;
+  const bal = (d) => moved.reduce((a, m) => a + m.w * Math.sin(clampPan(m.p1 + d) * Math.PI / 2), 0);
+  const target = moved.reduce((a, m) => a + m.w * Math.sin(m.p0 * Math.PI / 2), 0);
+  let lo = -0.5, hi = 0.5;                 // bal은 d에 따라 늘어나므로 반씩 좁혀 찾는다
+  for (let i = 0; i < 30; i++) { const mid = (lo + hi) / 2; if (bal(mid) < target) lo = mid; else hi = mid; }
+  return +((lo + hi) / 2).toFixed(4);
 }
 
 export function trackFxParams(m, raw, ref) {

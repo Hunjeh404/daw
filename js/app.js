@@ -8,6 +8,8 @@ import { initProjects } from './projectui.js';
 import { matchSource } from './project.js';
 import { importGuided, rebuildGuided } from './guided.js';
 import { detectTones } from './fixedtone.js';
+import { measureSpread } from './mixgraph.js';
+import { readWindow } from './pcm.js';
 import { renderMidi } from './instrument.js';
 
 const engine = new Engine();
@@ -888,7 +890,7 @@ function ensureFixed() {
   if (fixedJob || loading || engine.loading || engine.guidedPending || !engine.tracks.length || engine.mm.fixed?.scanned) return;
   engine.mm.fixed = { on: true, tones: [], scanned: false, busy: true };
   const mm = engine.mm;
-  fixedJob = detectTones(engine).catch(() => []).then((tones) => {
+  fixedJob = measureSpread(engine, readWindow).catch(() => {}).then(() => detectTones(engine)).catch(() => []).then((tones) => {
     fixedJob = null;
     if (engine.mm !== mm) return;             // 그사이 새 프로젝트
     engine.mm.fixed = { on: true, tones, scanned: true };
