@@ -1,7 +1,7 @@
 import { colorFor } from './cats.js';
 import { newClipId } from './engine.js';
 
-export const separationModel = 'bs-roformer-sw-6-v1';
+import { preferredModel } from './demix-models.js';
 const labels = ['Bass', 'Drums', 'Other', 'Vocals', 'Guitar', 'Piano'];
 
 function run(job, status, signal) {
@@ -15,10 +15,24 @@ function run(job, status, signal) {
     worker.onmessage = ({ data }) => {
       if (data.status) { status(data.status); return; }
       stop();
-      if (data.error) reject(Error(data.error)); else resolve(data.peaks);
+      if (data.error) reject(Object.assign(new Error(data.error), { name: data.name || 'Error', retryCPU: data.retryCPU }));
+      else resolve(data.peaks);
     };
     worker.postMessage(job);
   });
+}
+
+// Terminating an inference worker is asynchronous. Chromium can briefly hold
+// its sync access handles after terminate() returns.
+async function removePartial(root, id) {
+  for (let attempt = 0; ; attempt++) {
+    try { await root.removeEntry(id + '.pcm'); return; }
+    catch (err) {
+      if (err.name === 'NotFoundError') return;
+      if (err.name !== 'NoModificationAllowedError' || attempt === 7) throw err;
+      await new Promise(resolve => setTimeout(resolve, 40*(attempt+1)));
+    }
+  }
 }
 
 export async function rebuildDemix(E, status, signal) {
@@ -26,7 +40,14 @@ export async function rebuildDemix(E, status, signal) {
   const ref = E.sources.get(reference);
   const ids = parts.map(p => p.sid);
   try {
-    const peaks = await run({ root: E.root, ref: { file: ref.file, frames: ref.frames, ch: ref.ch }, ids }, status, signal);
+    const job = { model: E.guided.separation, root: E.root, ref: { file: ref.file, frames: ref.frames, ch: ref.ch }, ids };
+    let peaks;
+    try { peaks = await run(job, status, signal); }
+    catch (err) {
+      if (!err.retryCPU) throw err;
+      status('GPU 작업을 종료했습니다. CPU로 분리를 다시 시작합니다.');
+      peaks = await run({ ...job, cpuOnly: true }, status, signal);
+    }
     const files = await Promise.all(ids.map(async id => (await E.root.getFileHandle(id + '.pcm')).getFile()));
     for (const [j,id] of ids.entries()) {
       Object.assign(E.sources.get(id), { fileId: id, file: files[j], peaks: peaks[j], missing: false });
@@ -34,7 +55,7 @@ export async function rebuildDemix(E, status, signal) {
     for (const t of E.tracks) E.updateSegs(t);
     E.applyAll();
   } catch (err) {
-    await Promise.all(ids.map(id => E.root.removeEntry(id + '.pcm').catch(() => {})));
+    await Promise.all(ids.map(id => removePartial(E.root, id)));
     throw err;
   }
 }
@@ -42,7 +63,7 @@ export async function rebuildDemix(E, status, signal) {
 export async function importDemix(E, file, status, signal) {
   if (E.guided || E.tracks.length) throw Error('새 프로젝트에서 원곡을 불러오세요.');
   status('원곡 WAV 읽는 중');
-  const ref = await E.addSource(file.name.replace(/\.wav$/i, '').normalize('NFC'), await file.arrayBuffer(), { float: true });
+  const ref = await E.addSource(file.name.replace(/\.wav$/i, '').normalize('NFC'), file, { float: true }, signal);
   try {
     const { quota, usage } = await navigator.storage.estimate();
     if (quota && quota - usage < ref.frames * 8 * labels.length)
@@ -52,7 +73,7 @@ export async function importDemix(E, file, status, signal) {
       E.addMissingSource({ sid, name: label, frames: ref.frames, ch: 2, scale: 1, float: true });
       return { sid, label, trackId: crypto.randomUUID() };
     });
-    E.guided = { reference: ref.sid, parts, automatic: true, separation: separationModel };
+    E.guided = { reference: ref.sid, parts, automatic: true, separation: preferredModel(navigator) };
     await rebuildDemix(E, status, signal);
     for (const p of parts) {
       const t = E.makeTrack(p.label, { id: p.trackId, color: colorFor(p.label) });

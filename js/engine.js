@@ -6,6 +6,8 @@
 import { buildTrackChain, applyTrack, buildMaster, applyMaster, spatialMix, trackDefaults, masterDefaults } from './mixgraph.js';
 import { fadeGain } from './fades.js';
 import { category } from './cats.js';
+import { wavLayout, decodedWavChunks } from './wav-chunks.js';
+import { desktopModel, mobileModel } from './demix-models.js';
 import { dbToLin } from './dsp.js';
 
 export const SR = 44100;
@@ -81,8 +83,34 @@ export class Engine {
   }
 
   // 음원 하나를 풀어 저장 (트랙은 만들지 않음)
-  async addSource(name, arrayBuffer, extra) {
-    return this.addBuffer(name, await this.ctx.decodeAudioData(arrayBuffer), extra);
+  async addSource(name, input, extra, signal) {
+    if (input instanceof Blob && extra?.float) {
+      const layout = await wavLayout(input);
+      if (layout) {
+        const peaks = new Float32Array(Math.ceil((Math.ceil(layout.frames*SR/layout.rate)+1)/PEAK));
+        const sid = crypto.randomUUID();
+        const fh = await this.root.getFileHandle(sid+'.pcm', { create: true });
+        let writer, frames = 0;
+        try {
+          writer = await fh.createWritable();
+          for await (const {buf, skip, count} of decodedWavChunks(this.ctx, input, layout, signal)) {
+            await this.writePcm(writer, buf, layout.channels, count, peaks, 1, true, skip, frames);
+            frames += count;
+          }
+          await writer.close();
+          const file = await fh.getFile();
+          const src = this.addMissingSource({ sid, name, frames, ch: layout.channels, ...extra });
+          Object.assign(src, { missing:false, fileId:sid, file, peaks:peaks.subarray(0,Math.ceil(frames/PEAK)) });
+          return src;
+        } catch (err) {
+          try { await writer?.abort(); } catch {}
+          await this.root.removeEntry(sid+'.pcm').catch(() => {});
+          throw err;
+        }
+      }
+    }
+    const bytes = input instanceof Blob ? await input.arrayBuffer() : input;
+    return this.addBuffer(name, await this.ctx.decodeAudioData(bytes), extra);
   }
 
   // 이미 풀린 소리(AudioBuffer)를 저장 (미디로 구운 소리도 여기로). extra는 음원 항목에 덧붙일 값
@@ -103,6 +131,7 @@ export class Engine {
     try {
       w = await fh.createWritable();
       await this.writePcm(w, buf, ch, frames, peaks, scale, floating);
+      await w.close();
     } catch (err) {
       try { await w?.abort(); } catch {}
       await this.root.removeEntry(sid + '.pcm').catch(() => {});
@@ -136,7 +165,7 @@ export class Engine {
     if (src.fileId) await this.root.removeEntry(src.fileId + '.pcm').catch(() => {});
   }
 
-  get singleWav() { return this.guided?.separation === 'bs-roformer-sw-6-v1'; }
+  get singleWav() { return [desktopModel, mobileModel].includes(this.guided?.separation); }
 
   get missingSources() {
     const generated = new Set(this.singleWav ? this.guided.parts.map(p => p.sid) : []);
@@ -197,7 +226,7 @@ export class Engine {
     return { segs: t.segs, srcs };
   }
 
-  async writePcm(w, buf, ch, frames, peaks, scale, floating) {
+  async writePcm(w, buf, ch, frames, peaks, scale, floating, skip = 0, offset = 0) {
     const k = 1 / scale;
     const L = buf.getChannelData(0);
     const R = ch === 2 ? buf.getChannelData(1) : null;
@@ -206,21 +235,20 @@ export class Engine {
       const out = floating ? new Float32Array(n * ch) : new Int16Array(n * ch);
       for (let i = 0; i < n; i++) {
         const f = s + i;
-        const l = L[f] * k;
+        const l = L[skip+f] * k;
         out[i * ch] = floating ? l : l * 32767;
         let a = l < 0 ? -l : l;
         if (R) {
-          const r = R[f] * k;
+          const r = R[skip+f] * k;
           out[i * ch + 1] = floating ? r : r * 32767;
           const ar = r < 0 ? -r : r;
           if (ar > a) a = ar;
         }
-        const pk = (f / PEAK) | 0;
+        const pk = ((offset+f) / PEAK) | 0;
         if (a > peaks[pk]) peaks[pk] = a;
       }
       await w.write(out);
     }
-    await w.close();
   }
 
   // 클립 목록 → 실제 재생 구간. 나중에 시작하는 클립이 위에 놓인다.
