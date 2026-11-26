@@ -49,9 +49,10 @@ export function initMix({ engine: E, pushUndo, onChange, undo, redo, rescanFixed
     space.className = 'spread';
     const label = document.createElement('span');
     label.textContent = '전체 공간감';
-    space.append(label, segmented([['orig','원곡 그대로'], ['wide','조금 넓게']], E.mm.wider ? 'wide' : 'orig', v => {
-      if (!!E.mm.wider === (v === 'wide')) return;
-      pushUndo(); E.mm.wider = v === 'wide'; changed();
+    const level = E.mm.wider === 2 ? 'wide' : E.mm.wider ? 'some' : 'orig';
+    space.append(label, segmented([['orig','원곡 그대로'], ['some','조금 넓게'], ['wide','넓게']], level, v => {
+      if (v === level) return;
+      pushUndo(); E.mm.wider = v === 'wide' ? 2 : v === 'some'; changed(); render();
     }));
     const chips = document.createElement('div');
     chips.className = 'chips';

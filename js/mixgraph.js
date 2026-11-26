@@ -55,9 +55,11 @@ export function buildTrackChain(ctx, p0) {
 const stagePan = { guitar: -.14, keys: .12, strings: .10, perc: -.08, backing: .08, synth: -.10, brass: -.08, wood: .08 };
 export function spatialMix(track, master) {
   const offset = stagePan[track.cat];
-  if (!master.wider || !offset || track.mix.ref) return track.mix;
-  return { ...track.mix, width: (track.mix.width ?? 1) * 1.06,
-    pan: Math.max(-1, Math.min(1, (track.mix.pan || 0) + offset)) };
+  // master.wider: false(원곡 그대로) | true(조금 넓게) | 2(넓게: 조금 넓게의 두 배)
+  const level = master.wider === 2 ? 2 : master.wider ? 1 : 0;
+  if (!level || !offset || track.mix.ref) return track.mix;
+  return { ...track.mix, width: (track.mix.width ?? 1) * (1 + 0.06 * level),
+    pan: Math.max(-1, Math.min(1, (track.mix.pan || 0) + offset * level)) };
 }
 
 export function trackFxParams(m, raw, ref) {
