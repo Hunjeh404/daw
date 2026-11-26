@@ -90,7 +90,7 @@ export function initExport({ engine: E, flash, sub, setBusy, onStop }) {
     if (E.guided && !E.guided.automatic && st.scope === 'mix') note(c1, inc.length === live().length && E.commonLayout()
       ? '전체 선택 시 원곡에 트랙 편집과 효과로 생긴 차이를 더합니다.'
       : '일부 트랙만 선택했거나 클립 배치가 다르면 해당 스템과 그 효과를 합칩니다.');
-    if (E.singleWav && st.scope === 'mix') note(c1, '자동 마스터링 · 목표 −14 LUFS, 트루피크 상한 −1 dBTP');
+    if (st.scope === 'mix') note(c1, '자동 마스터링 · 목표 −14 LUFS, 트루피크 상한 −1 dBTP');
     if (st.scope === 'stems') note(c1, '트랙마다 트랙 믹싱 설정과 그 트랙의 리버브까지 넣고, 마스터는 입력 음량만 적용합니다. 0dB를 넘으면 모든 트랙을 같은 만큼 낮춥니다. 파일들은 zip 하나로 묶습니다.');
 
     // 구간: 앞뒤 자르기와 전체 페이드

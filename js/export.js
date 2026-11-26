@@ -30,7 +30,8 @@ export async function exportAudio(E, opt, onProgress) {
   let clipped = 0;
   if (scope === 'mix') {
     const w = make(meta);
-    if (E.singleWav) {
+    // 전체 믹스는 불러온 방식(원곡 WAV 하나, 원곡+스템 ZIP, 트랙 음원)과 상관없이 같은 자동 마스터링을 거친다
+    {
       const meter = new MixMeter();
       await renderFile(meter, tracks, E.mm, p => onProgress?.(p/2));
       const gain = meter.gain();
@@ -38,7 +39,7 @@ export async function exportAudio(E, opt, onProgress) {
         for (let i = 0; i < L.length; i++) { L[i] *= gain; R[i] *= gain; }
         return w.push(L, R);
       } }, tracks, E.mm, p => onProgress?.((1+p)/2));
-    } else await renderFile(w, tracks, E.mm, onProgress);
+    }
     const blob = await w.finish();
     clipped = w.clipped;
     download(blob, `${base}.${ext}`);
