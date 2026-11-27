@@ -22,7 +22,8 @@ async function readPCM(s, start, end) {
 // 앞·중간·끝 구역마다 실제로 소리가 나는 지점에서 스템 합과 원곡의 시간차를 확인한다.
 async function checkAlignment(sources) {
   const frames = sources[0].frames;
-  if (sources.some(s => s.frames !== frames)) throw Error('원곡과 스템의 길이가 다릅니다. 같은 버전과 템포의 WAV를 선택하세요.');
+  // 수노 스템은 원곡보다 한두 샘플 길게 나오기도 한다. 0.05초 안쪽 차이는 원곡 길이에 맞춰 읽는다(모자란 끝은 무음)
+  if (sources.some(s => Math.abs(s.frames - frames) > SR * 0.05)) throw Error('원곡과 스템의 길이가 다릅니다. 같은 버전과 템포의 WAV를 선택하세요.');
   let checked = 0;
   for (let region = 0; region < 3; region++) {
     let best = null;

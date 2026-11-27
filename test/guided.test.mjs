@@ -67,7 +67,14 @@ test('different audio with the same duration is rejected', async () => {
 });
 
 test('unequal duration is rejected', async () => {
-  await assert.rejects(run([mix.subarray(0,-2),...guides], [{},{}]), /길이/);
+  await assert.rejects(run([mix.subarray(0,-2*Math.round(rate*.1)),...guides], [{},{}]), /길이/);
+});
+
+test('stems one sample longer than the reference are accepted at reference length', async () => {
+  const longer = guides.map(g => { const x = new Float32Array(g.length+2); x.set(g); return x; });
+  const out = await run([mix,...longer], [{},{}]);
+  assert.ok(out.length);
+  for (const o of out) assert.equal(o.data.length, frames*2);
 });
 
 
