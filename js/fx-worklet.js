@@ -258,7 +258,6 @@ class MasterFx extends AudioWorkletProcessor {
           this.mid.run(l, r, m); l = this.mid.oL; r = this.mid.oR;
           this.air.run(l, r, m); l = this.air.oL; r = this.air.oR;
         }
-        if (des) { this.ess.run(l, r, (l + r) * 0.5); l = this.ess.oL; r = this.ess.oR; }
         if (glue) {
           this.comp.track((l * l + r * r) * 0.5);
           const g = this.cg0 + (this.cg - this.cg0) * (((i & (K - 1)) + 1) / K);
