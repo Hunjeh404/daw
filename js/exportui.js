@@ -5,6 +5,7 @@ import { exportAudio } from './export.js';
 import { PEAK } from './engine.js';
 import { dbToLin } from './dsp.js';
 import { beatEnv, gridAt, tailFor } from './beat.js';
+import { sendAmt } from './mixgraph.js';
 
 const $ = (id) => document.getElementById(id);
 const mb = (n) => (n / 1048576).toFixed(1) + 'MB';
@@ -46,7 +47,7 @@ export function initExport({ engine: E, flash, sub, setBusy, onStop }) {
     if (!st.tailAuto) return;
     const g = grid();
     if (g === undefined) return;
-    const wet = E.mm.verb.on && included().some(t => t.mix.send > 0);
+    const wet = E.mm.verb.on && included().some(t => sendAmt(t.mix) > 0);
     st.tail = tailFor(g, st.b, wet ? Math.max(1, E.mm.verb.size + .012) : 1);
   }
 

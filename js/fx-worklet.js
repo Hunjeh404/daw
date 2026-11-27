@@ -39,6 +39,34 @@ class DynBand {
   }
 }
 
+// 치찰음 누르기: 7kHz 대역이 전체 소리에 비해 튈 때만 그 대역을 누른다.
+// 자기 평균과 비교하지 않으므로 무음 뒤 첫 소절이 먹먹해지지 않는다.
+class Ess {
+  constructor() {
+    this.sc = new Biquad().set('bandpass', 7000, 0.8, 0, FS);
+    this.fL = new Biquad().set('peaking', 7000, 1.4, 0, FS);
+    this.fR = new Biquad(); this.fR.copyFrom(this.fL);
+    this.b = 0; this.f = 0; this.cur = 0;
+    this.a = coef(2, FS); this.r = coef(60, FS);
+  }
+  // 16샘플마다: amt 0~1
+  control(amt) {
+    const d = linToDb(this.b + 1e-9) - linToDb(this.f + 1e-9);
+    const red = Math.min(Math.max((d + 8) * 0.8, 0), 8) * amt;
+    if (Math.abs(red - this.cur) > 0.05) {
+      this.cur += (red - this.cur) * 0.5;
+      this.fL.set('peaking', 7000, 1.4, -this.cur, FS);
+      this.fR.copyFrom(this.fL);
+    }
+  }
+  run(l, r, m) {
+    const s = Math.abs(this.sc.run(m)), x = Math.abs(m);
+    this.b = s > this.b ? this.a * this.b + (1 - this.a) * s : this.r * this.b + (1 - this.r) * s;
+    this.f = x > this.f ? this.a * this.f + (1 - this.a) * x : this.r * this.f + (1 - this.r) * x;
+    this.oL = this.fL.run(l); this.oR = this.fR.run(r);
+  }
+}
+
 class Compressor {
   constructor(atk = 10, rel = 150, gatk = 5, grel = 120) { this.env = 1e-6; this.g = 0; this.a = coef(atk, FS); this.r = coef(rel, FS); this.ga = coefK(gatk); this.gr = coefK(grel); }
   track(m2) { this.env = m2 > this.env ? this.a * this.env + (1 - this.a) * m2 : this.r * this.env + (1 - this.r) * m2; }
@@ -62,6 +90,7 @@ class TrackFx extends AudioWorkletProcessor {
     this.p = opts?.processorOptions?.p || { bypass: false };
     this.mid = new DynBand('peaking', 4000, 0.7, 'bandpass', 4000);
     this.air = new DynBand('highshelf', 11000, 0.7, 'highpass', 10000);
+    this.ess = new Ess();   // 거리감: 치찰음 누르기
     this.comp = new Compressor();
     this.tf = 0; this.ts = 0; this.tg = 0;
     this.tfa = coef(0.5, FS); this.tfr = coef(30, FS); this.tsa = coef(25, FS); this.tsr = coef(250, FS); this.tgs = coefK(1);
@@ -84,6 +113,7 @@ class TrackFx extends AudioWorkletProcessor {
     const iL = inp[0], iR = inp[1] || inp[0];
     const p = this.p;
     const tam = !p.bypass && p.tamer && p.tamer.on && (p.tamer.mid > 0 || p.tamer.air > 0);
+    const des = !p.bypass && p.ess > 0;
     const cmp = !p.bypass && p.comp && p.comp.on && p.comp.amt > 0;
     const trn = !p.bypass && p.trans && p.trans.on && p.trans.amt !== 0;
     const dk = !p.bypass && p.duck && p.duck.on && p.duck.depth > 0;
@@ -94,7 +124,7 @@ class TrackFx extends AudioWorkletProcessor {
     const ms = flip || sw !== 1 || pan !== 0;
     // 패닝: 가운데 성분만 등전력으로 옮기고 넓은 성분은 그대로 (전체 크기 유지)
     const ang = (pan + 1) * Math.PI / 4, gpl = Math.SQRT2 * Math.cos(ang), gpr = Math.SQRT2 * Math.sin(ang);
-    if (!tam && !cmp && !trn && !dk && !lim && !ms) { oL.set(iL); oR.set(iR); this.gl = 1; return true; }
+    if (!tam && !des && !cmp && !trn && !dk && !lim && !ms) { oL.set(iL); oR.set(iR); this.gl = 1; return true; }
     const key = inputs[1] && inputs[1].length ? inputs[1] : null;
     if (dk && this.keyType !== p.duck.key) this.setKey(p.duck.key);
     let thr = 0, ratio = 1;
@@ -103,6 +133,7 @@ class TrackFx extends AudioWorkletProcessor {
     const useGain = cmp || trn || dk;
     for (let i0 = 0; i0 < iL.length; i0 += K) {
       if (tam) { this.mid.control(p.tamer.mid, 9, 0); this.air.control(p.tamer.air, 8, 1.5); }
+      if (des) this.ess.control(p.ess);
       // 이전 16샘플까지의 엔벨로프로 이번 구간 이득을 정한다
       let g1 = 1;
       if (useGain) {
@@ -136,6 +167,7 @@ class TrackFx extends AudioWorkletProcessor {
           this.mid.run(l, r, m); l = this.mid.oL; r = this.mid.oR;
           this.air.run(l, r, m); l = this.air.oL; r = this.air.oR;
         }
+        if (des) { this.ess.run(l, r, (l + r) * 0.5); l = this.ess.oL; r = this.ess.oR; }
         if (cmp) this.comp.track((l * l + r * r) * 0.5);
         if (trn) {
           const a = Math.abs(l) + Math.abs(r);
@@ -226,6 +258,7 @@ class MasterFx extends AudioWorkletProcessor {
           this.mid.run(l, r, m); l = this.mid.oL; r = this.mid.oR;
           this.air.run(l, r, m); l = this.air.oL; r = this.air.oR;
         }
+        if (des) { this.ess.run(l, r, (l + r) * 0.5); l = this.ess.oL; r = this.ess.oR; }
         if (glue) {
           this.comp.track((l * l + r * r) * 0.5);
           const g = this.cg0 + (this.cg - this.cg0) * (((i & (K - 1)) + 1) / K);

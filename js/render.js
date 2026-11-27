@@ -1,6 +1,6 @@
 // 오프라인 렌더링: 실시간과 같은 처리 연결로 구간을 계산한다.
 // 메모리를 아끼려고 12초씩 나눠 계산하고, 각 조각 앞의 소리를 미리 돌려 컴프·리버브 상태를 이어 붙인다.
-import { buildTrackChain, applyTrack, trackFxParams, spatialMix, spreadShift, buildMaster, applyMaster } from './mixgraph.js';
+import { buildTrackChain, applyTrack, trackFxParams, spatialMix, spreadShift, buildMaster, applyMaster, sendAmt } from './mixgraph.js';
 import { fadeBuffer } from './fades.js';
 import { readWindow } from './pcm.js';
 import { dbToLin } from './dsp.js';
@@ -16,7 +16,7 @@ export async function renderRange(E, a, b, onChunk, opt = {}) {
   // only가 있으면 그 트랙들만(음소거·솔로 무시), 없으면 지금 들리는 트랙들
   const use = opt.only ? live.filter((t) => opt.only.includes(t)) : live.filter((t) => !t.muted && (!anySolo || t.solo));
   const tail = opt.tail || 0;
-  const wet = mm.verb.on !== false && use.some((t) => t.mix.send > 0);
+  const wet = mm.verb.on !== false && use.some((t) => sendAmt(t.mix) > 0);
   // 긴 리버브도 조각 경계 너머까지 이어지도록 실제 임펄스 응답 길이를 포함한다.
   const pre = opt.pre ?? Math.max(PRE_DEFAULT, wet ? Math.ceil((mm.verb.size + 0.012) * SR) : 0);
   for (let c0 = a; c0 < b; c0 += CHUNK) {

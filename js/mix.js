@@ -80,6 +80,17 @@ export function initMix({ engine: E, pushUndo, onChange, undo, redo, rescanFixed
       label:'리버브', min:0, max:100, step:1, unit:'%', get:() => Math.round(t.mix.send * 100),
       show:String, set:v => { t.mix.send = v / 100; if (v) E.mm.verb.on = true; changed(); },
     }));
+    // 거리감: 마이크에 붙은 소리를 뒤로 물린다 (로우컷·250Hz 줄이기·치찰음 누르기·리버브 프리딜레이)
+    const dist = document.createElement('div');
+    dist.className = 'row';
+    const distLabel = document.createElement('label');
+    distLabel.textContent = '거리감';
+    const dv = String(t.mix.dist || 0);
+    dist.append(distLabel, segmented([['0','끔'], ['1','조금'], ['2','멀리']], dv, v => {
+      if (v === dv) return;
+      pushUndo(); t.mix.dist = +v; if (+v) E.mm.verb.on = true; changed(); render();
+    }));
+    card.append(dist);
     const active = chips.querySelector('.on');
     body.append(space, fixedCard(), chips, card);
     chips.scrollLeft = active.offsetLeft - chips.offsetLeft - (chips.clientWidth - active.offsetWidth) / 2;

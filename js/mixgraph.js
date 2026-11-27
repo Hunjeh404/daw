@@ -6,6 +6,7 @@ import { MAX_TONES } from './fixedtone.js';
 export const trackDefaults = () => ({
   ref: false,
   pan: 0, send: 0, width: 1, flip: false,
+  dist: 0,                // 거리감: 0 끔 | 1 조금 | 2 멀리
   low: { on: false, hz: 80 },
   eq: { on: false, low: 0, mid: 0, high: 0 },
   tamer: { on: false, mid: 0, air: 0 },
@@ -28,6 +29,16 @@ export const masterDefaults = () => ({
 
 export const EQF = { low: 120, mid: 1000, high: 8000 };
 
+// 거리감 단계별: 로우컷(Hz), 250Hz 줄이기(dB), 치찰음 누르기 세기, 리버브 프리딜레이(초), 리버브 더 보내기
+export const DIST = [
+  { hp: 0, mud: 0, ess: 0, pre: 0, send: 0 },
+  { hp: 100, mud: -2, ess: 0.5, pre: 0.025, send: 0.1 },
+  { hp: 120, mud: -4, ess: 1, pre: 0.04, send: 0.18 },
+];
+const distOf = (m) => DIST[m.dist] || DIST[0];
+// 실제로 리버브에 보내는 양 (거리감 포함)
+export const sendAmt = (m) => (m.send || 0) + distOf(m).send;
+
 function biquad(ctx, type, f, q) {
   const b = ctx.createBiquadFilter();
   b.type = type; b.frequency.value = f; b.Q.value = q;
@@ -37,6 +48,7 @@ function biquad(ctx, type, f, q) {
 export function buildTrackChain(ctx, p0) {
   const trim = ctx.createGain();
   const hp = biquad(ctx, 'highpass', 10, 0.707);
+  const mud = biquad(ctx, 'peaking', 250, 1);
   const ls = biquad(ctx, 'lowshelf', EQF.low, 0.7);
   const pk = biquad(ctx, 'peaking', EQF.mid, 0.8);
   const hs = biquad(ctx, 'highshelf', EQF.high, 0.7);
@@ -45,10 +57,12 @@ export function buildTrackChain(ctx, p0) {
   const fader = ctx.createGain();
   const send = ctx.createGain();
   send.gain.value = 0;
-  trim.connect(hp).connect(ls).connect(pk).connect(hs).connect(fx, 0, 0);
+  const pre = ctx.createDelay(0.1);      // 거리감: 리버브가 원음보다 조금 늦게 시작하게
+  pre.delayTime.value = 0;
+  trim.connect(hp).connect(mud).connect(ls).connect(pk).connect(hs).connect(fx, 0, 0);
   fx.connect(pan).connect(fader);
-  fader.connect(send);
-  return { input: trim, trim, hp, ls, pk, hs, fx, pan, fader, send, out: fader };
+  fader.connect(pre).connect(send);
+  return { input: trim, trim, hp, mud, ls, pk, hs, fx, pan, fader, pre, send, out: fader };
 }
 
 // 전역 공간감은 개별 트랙 설정 위에 적용한다. 원래의 보컬·드럼·베이스 위치는 유지한다.
@@ -129,6 +143,7 @@ export function trackFxParams(m, raw, ref) {
     trans: { on: m.comp.on, amt: m.comp.trans },
     duck: { on: m.duck.on, depth: m.duck.depth, key: 'kick' },
     lim: m.lim,
+    ess: distOf(m).ess,
     st: { width: m.width ?? 1, flip: !!m.flip, pan: m.pan || 0 },
   };
 }
@@ -139,13 +154,16 @@ const setter = (ctx, now) => (param, v) => { if (now) param.value = v; else para
 export function applyTrack(ch, m, raw, ctx, ref, now) {
   const set = setter(ctx, now);
   const on = !raw;
-  set(ch.hp.frequency, on && m.low.on ? m.low.hz : 0);
+  const d = distOf(m);
+  set(ch.hp.frequency, on ? Math.max(m.low.on ? m.low.hz : 0, d.hp) : 0);
+  set(ch.mud.gain, on ? d.mud : 0);
+  set(ch.pre.delayTime, on ? d.pre : 0);
   set(ch.ls.gain, on && m.eq.on ? m.eq.low : 0);
   set(ch.pk.gain, on && m.eq.on ? m.eq.mid : 0);
   set(ch.hs.gain, on && m.eq.on ? m.eq.high : 0);
   if (!now) ch.fx.port.postMessage(trackFxParams(m, raw, ref));
   set(ch.pan.pan, 0);   // 패닝은 track-fx 안에서 한다
-  set(ch.send.gain, on ? m.send * 0.8 : 0);
+  set(ch.send.gain, on ? sendAmt(m) * 0.8 : 0);
 }
 
 export function masterFxParams(mm, raw, matchDb = 0) {
