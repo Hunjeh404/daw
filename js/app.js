@@ -11,6 +11,7 @@ import { detectTones } from './fixedtone.js';
 import { measureSpread } from './mixgraph.js';
 import { readWindow } from './pcm.js';
 import { renderMidi } from './instrument.js';
+import { autoVoice } from './voice.js';
 
 const engine = new Engine();
 const $ = (id) => document.getElementById(id);
@@ -268,6 +269,7 @@ async function loadFiles(files, relink) {
     flash(`음원 ${linked}개 연결` + (wrong.length ? ` · 프로젝트에 없는 음원: ${wrong.join(', ')}` : '') + (left ? ` · 아직 연결 안 된 음원 ${left}개` : ''));
   }
   showStats();
+  runVoice();
 }
 
 // 프로젝트를 열 때: 미디 음원은 저장된 미디로 다시 굽는다
@@ -813,7 +815,10 @@ const mix = initMix({
   engine, pushUndo, rescanFixed: () => refreshTabs(),
   undo: () => $('undo').click(), redo: () => $('redo').click(),
   onChange: () => { renderCompare(); for (const t of engine.tracks) updateHead(t); renderPanel(); redraw(); },
+  voice: { addTrack: (t) => { renderTrack(t); orderRows(); afterChange(); } },
 });
+// 보컬 잔향 제거(필요할 때 자동)와 목소리 변환 트랙 다시 만들기
+const runVoice = () => autoVoice(engine, () => mix.voicePaint());
 
 // ---------- 내보내기 탭 ----------
 const exp = initExport({ engine, flash, sub, setBusy: (b) => { busy = b; if (!b) showStats(); }, onStop: updatePlayBtn });
@@ -840,6 +845,7 @@ const proj = initProjects({
     bakeMidiHoles().then(() => {
       afterChange(); paintRelink(); renderCompare(); showStats();
       if (!engine.missingSources.length) flash(`"${engine.projectName}" 열었습니다`);
+      runVoice();
     });
   },
 });

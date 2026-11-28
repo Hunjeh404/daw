@@ -145,7 +145,7 @@ export class Engine {
 
   // 아직 음원이 없는 자리 (프로젝트에서 열었을 때)
   addMissingSource(info) {
-    const src = { sid: info.sid, idx: this.nextIdx++, name: info.name, frames: info.frames, ch: info.ch, scale: info.scale || 1, peaks: null, file: null, missing: true, float: !!info.float, midi: info.midi };
+    const src = { sid: info.sid, idx: this.nextIdx++, name: info.name, frames: info.frames, ch: info.ch, scale: info.scale || 1, peaks: null, file: null, missing: true, float: !!info.float, midi: info.midi, vc: info.vc };
     this.sources.set(src.sid, src);
     this.srcIdx.set(src.idx, src);
     return src;
@@ -163,13 +163,14 @@ export class Engine {
     this.sources.delete(src.sid);
     this.srcIdx.delete(src.idx);
     if (src.fileId) await this.root.removeEntry(src.fileId + '.pcm').catch(() => {});
+    for (const s of Object.values(src.sounds || {})) if (s.fileId !== src.fileId) await this.root.removeEntry(s.fileId + '.pcm').catch(() => {});   // 잔향 제거 전·후 소리
   }
 
   get singleWav() { return [desktopModel, mobileModel].includes(this.guided?.separation); }
 
   get missingSources() {
     const generated = new Set(this.singleWav ? this.guided.parts.map(p => p.sid) : []);
-    return [...this.sources.values()].filter(s => s.missing && !generated.has(s.sid)
+    return [...this.sources.values()].filter(s => s.missing && !s.vc && !generated.has(s.sid)
       && (this.guidedIds.includes(s.sid) || this.tracks.some(t => t.clips.some(c => c.sid === s.sid))));
   }
 

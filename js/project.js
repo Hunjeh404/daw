@@ -47,7 +47,7 @@ export function serialize(E, name, id) {
   return {
     guided: E.guided ? structuredClone(E.guided) : undefined,
     app: 'DAW4', v: 2, id, name, savedAt: Date.now(),
-    sources: [...E.sources.values()].filter((s) => used.has(s.sid)).map((s) => ({ sid: s.sid, name: s.name, frames: s.frames, ch: s.ch, scale: s.scale, float: s.float || undefined, ...(s.midi ? { midi: { kind: s.midi.kind, kit: s.midi.kit, b64: b64(s.midi.bytes) } } : {}) })),
+    sources: [...E.sources.values()].filter((s) => used.has(s.sid)).map((s) => ({ sid: s.sid, name: s.name, frames: s.frames, ch: s.ch, scale: s.scale, float: s.float || undefined, ...(s.midi ? { midi: { kind: s.midi.kind, kit: s.midi.kit, b64: b64(s.midi.bytes) } } : {}), ...(s.vc ? { vc: { ...s.vc } } : {}) })),
     tracks: E.tracks.map(trackState),
     mm: structuredClone(E.mm), mode: E.mode, loop: { ...E.loop },
     ana: { rawLufs: E.ana.rawLufs ?? null, procLufs: E.ana.procLufs ?? null, refLufs: E.ana.refLufs ?? null, hasFit: !!E.ana.hasFit },
